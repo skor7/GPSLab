@@ -1,0 +1,178 @@
+name: Build GPSLab
+
+on:
+  push:
+    paths:
+      - 'Source/**'
+      - 'Makefile'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'Source/**'
+      - 'Makefile'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build GPSLab.dylib (arm64, iOS 16+)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential fakeroot rsync curl perl zip git \
+            libxml2 libtinfo6 libz3-dev libplist-utils wget unzip xz-utils
+
+      - name: Install Theos (with Linux toolchain and an iOS 16 SDK)
+        uses: Randomblock1/theos-action@v1
+
+      - name: Verify an iOS 16+ SDK is available
+        shell: bash
+        run: |
+          if ! ls "$THEOS"/sdks/iPhoneOS16.*.sdk >/dev/null 2>&1; then
+            echo "::error::No iOS 16+ SDK found in $THEOS/sdks"
+            ls "$THEOS"/sdks || true
+            exit 1
+          fi
+          ls -d "$THEOS"/sdks/iPhoneOS16.*.sdk
+
+      - name: Install ldid for the Theos signing step
+        shell: bash
+        run: |
+          sudo curl -fsSL -o /usr/local/bin/ldid \
+            https://github.com/ProcursusTeam/ldid/releases/latest/download/ldid_linux_x86_64
+          sudo chmod +x /usr/local/bin/ldid
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          make clean
+          make
+
+      - name: Collect dylib
+        id: dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+          built="$(find .theos -type f -name 'GPSLab.dylib' -print -quit)"
+          if [ -z "$built" ]; then
+            echo "::error::GPSLab.dylib was not produced by the build"
+            exit 1
+          fi
+          cp "$built" "$GITHUB_WORKSPACE/GPSLab.dylib"
+          echo "path=$GITHUB_WORKSPACE/GPSLab.dylib" >> "$GITHUB_OUTPUT"
+
+      - name: Verify arm64, install_name and dependencies
+        shell: bash
+        run: |
+          python3 - "${{ steps.dylib.outputs.path }}" <<'PY'
+          import struct
+          import sys
+
+          MH_MAGIC_64 = 0xFEEDFACF
+          CPU_TYPE_ARM64 = 0x0100000C
+          LC_REQ_DYLD = 0x80000000
+          LC_ID_DYLIB = 0x0D
+          DYLIB_COMMANDS = {
+              0x0C,  # LC_LOAD_DYLIB
+              0x18,  # LC_LOAD_WEAK_DYLIB (appears as 0x80000018)
+              0x1F,  # LC_REEXPORT_DYLIB   (appears as 0x8000001F)
+              0x23,  # LC_LOAD_UPWARD_DYLIB
+          }
+          HEADER_SIZE = 32
+          MIN_COMMAND_SIZE = 8
+          MAX_COMMANDS = 4096
+
+          path = sys.argv[1]
+          with open(path, "rb") as handle:
+              data = handle.read()
+
+          if len(data) < HEADER_SIZE:
+              sys.exit("file is too small to be a Mach-O")
+
+          magic = struct.unpack_from("<I", data, 0)[0]
+          if magic != MH_MAGIC_64:
+              sys.exit(f"not a 64-bit little-endian Mach-O (magic={magic:#x})")
+
+          cputype = struct.unpack_from("<I", data, 4)[0]
+          if cputype != CPU_TYPE_ARM64:
+              sys.exit(f"not arm64 (cputype={cputype:#x})")
+
+          ncmds = struct.unpack_from("<I", data, 16)[0]
+          sizeofcmds = struct.unpack_from("<I", data, 20)[0]
+          if ncmds > MAX_COMMANDS:
+              sys.exit(f"unreasonable load command count ({ncmds})")
+          if HEADER_SIZE + sizeofcmds > len(data):
+              sys.exit("load commands extend past the end of the file")
+
+          offset = HEADER_SIZE
+          install_name = None
+          dependencies = []
+
+          for _ in range(ncmds):
+              if offset + MIN_COMMAND_SIZE > len(data):
+                  sys.exit("truncated load command")
+              cmd, cmdsize = struct.unpack_from("<II", data, offset)
+              if cmdsize < MIN_COMMAND_SIZE or cmdsize % 4 != 0:
+                  sys.exit(f"invalid cmdsize {cmdsize} at offset {offset}")
+              if offset + cmdsize > len(data):
+                  sys.exit(f"load command at offset {offset} extends past the end of the file")
+
+              # LC_REQ_DYLD (0x80000000) is a flag bit, not part of the command id.
+              base_cmd = cmd & ~LC_REQ_DYLD
+              if base_cmd in DYLIB_COMMANDS or base_cmd == LC_ID_DYLIB:
+                  if cmdsize < 24:
+                      sys.exit(f"dylib load command too small at offset {offset}")
+                  name_offset = struct.unpack_from("<I", data, offset + 8)[0]
+                  if name_offset < 24 or name_offset >= cmdsize:
+                      sys.exit(f"invalid dylib name offset {name_offset} at offset {offset}")
+                  name_start = offset + name_offset
+                  name_end = data.find(b"\0", name_start, offset + cmdsize)
+                  if name_end < 0:
+                      sys.exit(f"unterminated dylib name at offset {offset}")
+                  name = data[name_start:name_end].decode("utf-8", "replace")
+                  if base_cmd == LC_ID_DYLIB:
+                      install_name = name
+                  else:
+                      dependencies.append(name)
+
+              offset += cmdsize
+
+          expected = "@executable_path/Frameworks/GPSLab.dylib"
+          print("arch: arm64")
+          print("install_name:", install_name)
+          print("dependencies:", dependencies)
+
+          if install_name != expected:
+              sys.exit(f"unexpected install_name: {install_name!r} != {expected!r}")
+
+          banned = ("substrate", "ellekit", "libhooker")
+          for dep in dependencies:
+              if any(word in dep.lower() for word in banned):
+                  sys.exit(f"banned dependency present: {dep}")
+
+          lowered = data.lower()
+          for word in banned:
+              if word.encode("ascii") in lowered:
+                  sys.exit(f"banned reference present in binary: {word}")
+          PY
+
+      - name: Upload GPSLab.dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: GPSLab-dylib
+          path: GPSLab.dylib
+          if-no-files-found: error
+          retention-days: 14
