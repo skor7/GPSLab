@@ -27,7 +27,6 @@ static CLAuthorizationStatus (*gGPSLabOriginalAuthorizationStatusClass)(id, SEL)
 static CLAuthorizationStatus (*gGPSLabOriginalAuthorizationStatusInstance)(id, SEL) = NULL;
 static NSInteger (*gGPSLabOriginalAccuracyAuthorization)(id, SEL) = NULL;
 static BOOL (*gGPSLabOriginalLocationServicesEnabled)(id, SEL) = NULL;
-static void (*gGPSLabOriginalDealloc)(id, SEL) = NULL;
 
 #pragma mark - Replacements
 
@@ -103,13 +102,6 @@ static void GPSLabHookRequestAlwaysAuthorization(id self, SEL _cmd) {
     [[GPSLabLocationStream sharedStream] notifyAuthorizationGrantedForManager:(CLLocationManager *)self];
 }
 
-static void GPSLabHookDealloc(id self, SEL _cmd) {
-    [[GPSLabLocationStream sharedStream] unregisterManager:(CLLocationManager *)self];
-    if (gGPSLabOriginalDealloc != NULL) {
-        gGPSLabOriginalDealloc(self, _cmd);
-    }
-}
-
 #pragma mark - Runtime helpers
 
 static BOOL GPSLabSwizzleInstance(Class cls, SEL selector, IMP replacement, void **originalOut) {
@@ -183,10 +175,6 @@ static BOOL GPSLabSwizzleClassMethod(Class cls, SEL selector, IMP replacement, v
                                            @selector(requestAlwaysAuthorization),
                                            (IMP)GPSLabHookRequestAlwaysAuthorization,
                                            NULL) ? 1 : 0;
-        installed += GPSLabSwizzleInstance(managerClass,
-                                           @selector(dealloc),
-                                           (IMP)GPSLabHookDealloc,
-                                           (void **)&gGPSLabOriginalDealloc) ? 1 : 0;
 
         // `-authorizationStatus` and `-accuracyAuthorization` only exist on newer
         // systems (both are present on iOS 16, but the runtime check keeps this

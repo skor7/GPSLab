@@ -61,6 +61,14 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
     }
 }
 
+// ARC-managed cleanup: a dispatch source must be cancelled before its last
+// reference is released. When the weak-keyed registry drops this state because
+// its manager was deallocated, cancel both timers here.
+- (void)dealloc {
+    [self invalidateStandardTimer];
+    [self invalidateSignificantTimer];
+}
+
 - (void)deliverStandardLocationUpdate {
     if (!self.standardActive) {
         return;
@@ -258,14 +266,20 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
             return;
         }
 
+        // The legacy callback and its selector are deprecated in iOS 14; the
+        // legacy path runs only for delegates that do not implement the modern
+        // replacement. Suppress the deprecation diagnostics across this branch
+        // (both the @selector reference and the message send).
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
         if ([delegate respondsToSelector:@selector(locationManagerDidChangeAuthorization:)]) {
             [delegate locationManagerDidChangeAuthorization:strongManager];
         } else if ([delegate respondsToSelector:@selector(locationManager:didChangeAuthorizationStatus:)]) {
-            // Send through `id` so the deprecated selector produces no build warning.
             id plainDelegate = (id)delegate;
             [plainDelegate locationManager:strongManager
             didChangeAuthorizationStatus:kCLAuthorizationStatusAuthorizedAlways];
         }
+#pragma clang diagnostic pop
     });
 }
 
