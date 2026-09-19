@@ -2,7 +2,8 @@
 //  GPSLabEngine.m
 //  GPSLab
 //
-//  Clean-room synthetic location engine.
+//  Clean-room synthetic location engine. Thread-safe; all mutable state is guarded
+//  by a single unfair lock.
 //
 
 #import "GPSLabEngine.h"
@@ -10,39 +11,27 @@
 #import <math.h>
 #import <os/lock.h>
 
-// Bounded random walk.
-static const double kGPSLabMaxWalkRadiusMeters = 8.0;
+#import "Diagnostics.h"
+#import "GPSLabDriftModel.h"
+#import "GPSLabGeodesy.h"
+#import "GPSLabLocationFactory.h"
+#import "GPSLabStore.h"
+#import "CoreLocationHooks.h"
+#import "LocationStream.h"
+
+NSNotificationName const GPSLabEngineStateDidChangeNotification = @"com.gpslab.engine.state";
+NSNotificationName const GPSLabLocationDidUpdateNotification = @"com.gpslab.engine.location";
+
+// Default drift step length. The walk advances at most this far per synthetic fix.
 static const double kGPSLabMaxStepMeters = 1.5;
 
-// Very small-angle geodesic approximation constants.
-static const double kGPSLabMetersPerDegreeLatitude = 111320.0;
-static const double kGPSLabMinCosLatitude = 0.01; // keeps longitude math finite at the poles
-static const double kGPSLabEarthRadiusMeters = 6371008.8;
-
-// Accuracy bands (meters).
-static const double kGPSLabHorizontalAccuracyMin = 5.0;
-static const double kGPSLabHorizontalAccuracyMax = 20.0;
-static const double kGPSLabVerticalAccuracyMin = 8.0;
-static const double kGPSLabVerticalAccuracyMax = 25.0;
-
-// All mutable engine state lives in static storage and is protected by a single lock.
-static os_unfair_lock gGPSLabStateLock = OS_UNFAIR_LOCK_INIT;
-static double gGPSLabBaseLatitude = 0.0;
-static double gGPSLabBaseLongitude = 0.0;
-static double gGPSLabBaseAltitude = 0.0;
-static double gGPSLabOffsetNorthMeters = 0.0;
-static double gGPSLabOffsetEastMeters = 0.0;
-
-// Helpers (definitions at the bottom of this file).
-static double GPSLabRandomUnit(void);
-static double GPSLabRandomInRange(double minValue, double maxValue);
-static CLLocationCoordinate2D GPSLabCoordinateFromOffsets(double baseLatitude,
-                                                          double baseLongitude,
-                                                          double northMeters,
-                                                          double eastMeters);
-static double GPSLabDistanceMeters(CLLocationCoordinate2D from, CLLocationCoordinate2D to);
-
-@implementation GPSLabEngine
+@implementation GPSLabEngine {
+    os_unfair_lock _lock;
+    GPSLabConfiguration *_configuration;
+    GPSLabDriftModel *_drift;
+    GPSLabRouteSimulator *_routeSimulator;
+    BOOL _lastKnownKeepLast;
+}
 
 + (instancetype)sharedEngine {
     static GPSLabEngine *instance = nil;
@@ -53,156 +42,365 @@ static double GPSLabDistanceMeters(CLLocationCoordinate2D from, CLLocationCoordi
     return instance;
 }
 
-#pragma mark - Anchor configuration
-
-+ (void)setBaseLatitude:(double)latitude
-              longitude:(double)longitude
-               altitude:(double)altitude {
-    os_unfair_lock_lock(&gGPSLabStateLock);
-    gGPSLabBaseLatitude = latitude;
-    gGPSLabBaseLongitude = longitude;
-    gGPSLabBaseAltitude = altitude;
-    gGPSLabOffsetNorthMeters = 0.0;
-    gGPSLabOffsetEastMeters = 0.0;
-    os_unfair_lock_unlock(&gGPSLabStateLock);
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        _lock = OS_UNFAIR_LOCK_INIT;
+        _configuration = [GPSLabConfiguration defaultConfiguration];
+        _drift = [[GPSLabDriftModel alloc] init];
+        _routeSimulator = [[GPSLabRouteSimulator alloc] init];
+    }
+    return self;
 }
 
-+ (CLLocationCoordinate2D)baseCoordinate {
-    os_unfair_lock_lock(&gGPSLabStateLock);
-    CLLocationCoordinate2D coordinate = CLLocationCoordinate2DMake(gGPSLabBaseLatitude,
-                                                                   gGPSLabBaseLongitude);
-    os_unfair_lock_unlock(&gGPSLabStateLock);
+#pragma mark - Configuration
+
+- (GPSLabConfiguration *)configuration {
+    os_unfair_lock_lock(&_lock);
+    GPSLabConfiguration *copy = [_configuration copy];
+    os_unfair_lock_unlock(&_lock);
+    return copy;
+}
+
+- (void)applyConfiguration:(GPSLabConfiguration *)configuration {
+    if (configuration == nil) {
+        return;
+    }
+    GPSLabConfiguration *sanitized = [configuration copy];
+    [sanitized sanitize];
+
+    os_unfair_lock_lock(&_lock);
+    BOOL anchorMoved = (_configuration.latitude != sanitized.latitude) ||
+        (_configuration.longitude != sanitized.longitude);
+    _configuration = sanitized;
+    if (anchorMoved) {
+        [_drift reset];
+    }
+    os_unfair_lock_unlock(&_lock);
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:GPSLabEngineStateDidChangeNotification
+                                                        object:self];
+}
+
+- (void)loadPersistedConfiguration {
+    GPSLabConfiguration *stored = [[GPSLabStore sharedStore] loadConfiguration];
+    _lastKnownKeepLast = stored.keepLastCoordinate;
+    [self applyConfiguration:stored];
+}
+
+- (void)persistConfiguration {
+    GPSLabConfiguration *configuration = [self configuration];
+
+    // Detect a true -> false transition: when the user turns keep-last off, the
+    // previously persisted coordinate must be erased, not just left stale.
+    os_unfair_lock_lock(&_lock);
+    BOOL clearedFromOnToOff = (_lastKnownKeepLast && !configuration.keepLastCoordinate);
+    _lastKnownKeepLast = configuration.keepLastCoordinate;
+    os_unfair_lock_unlock(&_lock);
+
+    [[GPSLabStore sharedStore] saveConfiguration:configuration];
+    if (clearedFromOnToOff) {
+        [[GPSLabStore sharedStore] clearPersistedCoordinate];
+    }
+}
+
+#pragma mark - Enable / disable
+
+- (BOOL)isEnabled {
+    os_unfair_lock_lock(&_lock);
+    BOOL enabled = _configuration.enabled;
+    os_unfair_lock_unlock(&_lock);
+    return enabled;
+}
+
+- (void)setEnabled:(BOOL)enabled {
+    os_unfair_lock_lock(&_lock);
+    _configuration.enabled = enabled;
+    os_unfair_lock_unlock(&_lock);
+}
+
+- (void)setEnabledAndNotify:(BOOL)enabled {
+    os_unfair_lock_lock(&_lock);
+    BOOL changed = (_configuration.enabled != enabled);
+    _configuration.enabled = enabled;
+    os_unfair_lock_unlock(&_lock);
+
+    if (!changed) {
+        return;
+    }
+    GPSLabDiagEngineEnabled(enabled);
+    if (enabled) {
+        GPSLabDiagSpoofActive();
+    }
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:GPSLabEngineStateDidChangeNotification
+                                                        object:self];
+
+    if (!enabled) {
+        // Suspend synthetic delivery but remember what each manager requested, then
+        // hand each requested stream back to real CoreLocation (exactly the kinds the
+        // host asked for) so the host degrades cleanly.
+        [[GPSLabLocationStream sharedStream] suspendAllSyntheticPreservingIntent];
+        for (CLLocationManager *manager in [[GPSLabLocationStream sharedStream] standardRequestedManagers]) {
+            [GPSLabCoreLocationHooks forwardSelector:@selector(startUpdatingLocation) onManager:manager];
+        }
+        for (CLLocationManager *manager in [[GPSLabLocationStream sharedStream] significantRequestedManagers]) {
+            [GPSLabCoreLocationHooks forwardSelector:@selector(startMonitoringSignificantLocationChanges)
+                                           onManager:manager];
+        }
+        [self stopRoute];
+    } else {
+        // Stop the original streams for managers we had delegated, then resume synthetic.
+        // Stopping both kinds for those managers is safe (a stop of a non-started stream
+        // is a no-op); it prevents a real + synthetic stream from running together.
+        NSArray<CLLocationManager *> *requested = [[GPSLabLocationStream sharedStream] requestedManagers];
+        for (CLLocationManager *manager in requested) {
+            [GPSLabCoreLocationHooks forwardSelector:@selector(stopUpdatingLocation) onManager:manager];
+            [GPSLabCoreLocationHooks forwardSelector:@selector(stopMonitoringSignificantLocationChanges)
+                                           onManager:manager];
+        }
+        [[GPSLabLocationStream sharedStream] resumeAllRequestedSynthetic];
+    }
+    [self persistConfiguration];
+}
+
+#pragma mark - Anchor configuration
+
+- (void)setBaseLatitude:(double)latitude
+              longitude:(double)longitude
+               altitude:(double)altitude
+                heading:(double)heading {
+    GPSLabConfiguration *updated = [self configuration];
+    if (GPSLabIsValidCoordinate(latitude, longitude)) {
+        updated.latitude = latitude;
+        updated.longitude = longitude;
+        updated.altitude = GPSLabClampDouble(altitude, -500.0, 100000.0);
+        updated.heading = GPSLabNormalizeHeading(heading);
+    }
+    [self applyConfiguration:updated];
+    [self persistConfiguration];
+}
+
+- (CLLocationCoordinate2D)baseCoordinate {
+    os_unfair_lock_lock(&_lock);
+    CLLocationCoordinate2D coordinate = CLLocationCoordinate2DMake(_configuration.latitude,
+                                                                   _configuration.longitude);
+    os_unfair_lock_unlock(&_lock);
     return coordinate;
+}
+
+#pragma mark - Drift
+
+- (BOOL)isDriftEnabled {
+    os_unfair_lock_lock(&_lock);
+    BOOL enabled = _configuration.driftEnabled;
+    os_unfair_lock_unlock(&_lock);
+    return enabled;
+}
+
+- (void)setDriftEnabled:(BOOL)enabled {
+    os_unfair_lock_lock(&_lock);
+    _configuration.driftEnabled = enabled;
+    if (!enabled) {
+        [_drift reset];
+    }
+    os_unfair_lock_unlock(&_lock);
+    [self persistConfiguration];
+}
+
+- (double)driftRadiusMeters {
+    os_unfair_lock_lock(&_lock);
+    double radius = _configuration.driftRadiusMeters;
+    os_unfair_lock_unlock(&_lock);
+    return radius;
+}
+
+- (void)setDriftRadiusMeters:(double)radius {
+    os_unfair_lock_lock(&_lock);
+    _configuration.driftRadiusMeters = GPSLabClampDouble(radius, 1.0, 500.0);
+    [_drift reset];
+    os_unfair_lock_unlock(&_lock);
+    [self persistConfiguration];
+}
+
+- (void)setKeepLastCoordinate:(BOOL)keepLast {
+    GPSLabConfiguration *configuration = [self configuration];
+    configuration.keepLastCoordinate = keepLast;
+    if (!keepLast) {
+        // Turning it off resets the anchor to safe defaults immediately.
+        configuration.latitude = 0.0;
+        configuration.longitude = 0.0;
+        configuration.altitude = 0.0;
+        configuration.heading = -1.0;
+    }
+    [self applyConfiguration:configuration];
+    [self persistConfiguration];
+}
+
+#pragma mark - Route simulation
+
+- (GPSLabRouteSimulator *)routeSimulator {
+    return _routeSimulator;
+}
+
+- (void)startRouteFrom:(CLLocationCoordinate2D)start
+                    to:(CLLocationCoordinate2D)end
+                  mode:(GPSLabRouteMode)mode
+        customSpeedKmh:(double)customSpeedKmh
+            completion:(nullable GPSLabRouteCompletion)completion {
+    GPSLabRouteCompletion completionCopy = completion != nil ? [completion copy] : nil;
+
+    os_unfair_lock_lock(&_lock);
+    _configuration.routeMode = mode;
+    _configuration.routeCustomSpeedKmh = GPSLabClampDouble(customSpeedKmh, 1.0, 300.0);
+    os_unfair_lock_unlock(&_lock);
+
+    GPSLabDiagRouteStarted();
+    __weak GPSLabEngine *weakSelf = self;
+    [_routeSimulator startRouteFrom:start
+                                 to:end
+                               mode:mode
+                     customSpeedKmh:customSpeedKmh
+                         completion:^(NSError * _Nullable error) {
+        GPSLabEngine *strongSelf = weakSelf;
+        if (strongSelf != nil) {
+            [strongSelf persistConfiguration];
+        }
+        if (error == nil) {
+            GPSLabDiagRouteStopped();
+        } else {
+            GPSLabDiagInternalError(2);
+        }
+        if (completionCopy != nil) {
+            completionCopy(error);
+        }
+    }];
+}
+
+- (void)pauseRoute {
+    [_routeSimulator pause];
+}
+
+- (void)resumeRoute {
+    [_routeSimulator resume];
+}
+
+- (void)stopRoute {
+    BOOL wasActive = [_routeSimulator isActive];
+    [_routeSimulator stop];
+
+    os_unfair_lock_lock(&_lock);
+    GPSLabStopBehavior behavior = _configuration.stopBehavior;
+    GPSLabRouteMode mode = _configuration.routeMode;
+    double customSpeed = _configuration.routeCustomSpeedKmh;
+
+    CLLocationCoordinate2D target = CLLocationCoordinate2DMake(_configuration.latitude,
+                                                               _configuration.longitude);
+    if (behavior == GPSLabStopBehaviorStayAtCurrent) {
+        CLLocationCoordinate2D current = target;
+        if ([_routeSimulator lastCoordinate:&current]) {
+            target = current;
+        }
+    } else {
+        CLLocationCoordinate2D routeStart = target;
+        if ([_routeSimulator routeStartCoordinate:&routeStart]) {
+            target = routeStart;
+        }
+    }
+
+    _configuration.latitude = target.latitude;
+    _configuration.longitude = target.longitude;
+    [_drift reset];
+    os_unfair_lock_unlock(&_lock);
+
+    (void)mode;
+    (void)customSpeed;
+
+    if (wasActive) {
+        GPSLabDiagRouteStopped();
+    }
+    [self persistConfiguration];
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:GPSLabEngineStateDidChangeNotification
+                                                        object:self];
 }
 
 #pragma mark - Location generation
 
 - (CLLocation *)currentLocation {
-    return [self locationAdvancingWalk:NO];
+    return [self locationAdvancing:NO];
 }
 
 - (CLLocation *)nextLocation {
-    return [self locationAdvancingWalk:YES];
+    return [self locationAdvancing:YES];
 }
 
-- (CLLocation *)locationAdvancingWalk:(BOOL)advance {
-    double north = 0.0;
-    double east = 0.0;
-    double baseLatitude = 0.0;
-    double baseLongitude = 0.0;
-    double baseAltitude = 0.0;
-
-    os_unfair_lock_lock(&gGPSLabStateLock);
-
-    if (advance) {
-        double candidateNorth = gGPSLabOffsetNorthMeters +
-            GPSLabRandomInRange(-kGPSLabMaxStepMeters, kGPSLabMaxStepMeters);
-        double candidateEast = gGPSLabOffsetEastMeters +
-            GPSLabRandomInRange(-kGPSLabMaxStepMeters, kGPSLabMaxStepMeters);
-
-        double radius = hypot(candidateNorth, candidateEast);
-        if (radius > kGPSLabMaxWalkRadiusMeters && radius > 0.0) {
-            double scale = kGPSLabMaxWalkRadiusMeters / radius;
-            candidateNorth *= scale;
-            candidateEast *= scale;
-        }
-
-        gGPSLabOffsetNorthMeters = candidateNorth;
-        gGPSLabOffsetEastMeters = candidateEast;
+- (CLLocation *)locationAdvancing:(BOOL)advance {
+    BOOL onRoute = [_routeSimulator isActive];
+    if (onRoute) {
+        return [self routeLocationAdvancing:advance];
     }
-
-    north = gGPSLabOffsetNorthMeters;
-    east = gGPSLabOffsetEastMeters;
-    baseLatitude = gGPSLabBaseLatitude;
-    baseLongitude = gGPSLabBaseLongitude;
-    baseAltitude = gGPSLabBaseAltitude;
-
-    os_unfair_lock_unlock(&gGPSLabStateLock);
-
-    CLLocationCoordinate2D anchor = CLLocationCoordinate2DMake(baseLatitude, baseLongitude);
-    CLLocationCoordinate2D coordinate = GPSLabCoordinateFromOffsets(baseLatitude,
-                                                                   baseLongitude,
-                                                                   north,
-                                                                   east);
-
-    // Belt-and-braces geodesic clamp: the local tangent-plane offset is already
-    // bounded, but never emit a point farther than the walk radius from the anchor.
-    if (GPSLabDistanceMeters(anchor, coordinate) > kGPSLabMaxWalkRadiusMeters) {
-        double radius = hypot(north, east);
-        if (radius > 0.0) {
-            double scale = kGPSLabMaxWalkRadiusMeters / radius;
-            coordinate = GPSLabCoordinateFromOffsets(baseLatitude,
-                                                     baseLongitude,
-                                                     north * scale,
-                                                     east * scale);
-        }
-    }
-
-    return [self locationWithCoordinate:coordinate altitude:baseAltitude];
+    return [self stationaryLocationAdvancing:advance];
 }
 
-- (CLLocation *)locationWithCoordinate:(CLLocationCoordinate2D)coordinate
-                              altitude:(double)altitude {
-    // A stationary receiver: speed is zero and course is invalid (-1).
-    return [[CLLocation alloc] initWithCoordinate:coordinate
-                                         altitude:altitude
-                               horizontalAccuracy:GPSLabRandomInRange(kGPSLabHorizontalAccuracyMin,
-                                                                      kGPSLabHorizontalAccuracyMax)
-                                 verticalAccuracy:GPSLabRandomInRange(kGPSLabVerticalAccuracyMin,
-                                                                      kGPSLabVerticalAccuracyMax)
-                                           course:-1.0
-                                            speed:0.0
-                                        timestamp:[NSDate date]];
+- (CLLocation *)stationaryLocationAdvancing:(BOOL)advance {
+    os_unfair_lock_lock(&_lock);
+    CLLocationCoordinate2D anchor = CLLocationCoordinate2DMake(_configuration.latitude,
+                                                               _configuration.longitude);
+    double radius = _configuration.driftRadiusMeters;
+    BOOL driftEnabled = _configuration.driftEnabled;
+    double altitude = _configuration.altitude;
+    double heading = _configuration.heading;
+
+    CLLocationCoordinate2D coordinate;
+    if (driftEnabled && advance) {
+        coordinate = [_drift advanceAroundAnchor:anchor radius:radius stepMeters:kGPSLabMaxStepMeters];
+    } else if (driftEnabled) {
+        coordinate = [_drift currentAroundAnchor:anchor];
+    } else {
+        coordinate = anchor;
+    }
+    os_unfair_lock_unlock(&_lock);
+
+    // Belt-and-braces geodesic clamp: never emit a point farther than the radius.
+    if (driftEnabled && GPSLabDistanceMeters(anchor, coordinate) > radius) {
+        coordinate = GPSLabCoordinateFromOffset(anchor, 0.0, 0.0);
+    }
+
+    CLLocation *location = [GPSLabLocationFactory staticLocationWithCoordinate:coordinate
+                                                                     altitude:altitude
+                                                                      heading:heading];
+    [self didProduceLocation:location];
+    return location;
+}
+
+- (CLLocation *)routeLocationAdvancing:(BOOL)advance {
+    (void)advance; // Route progress is time-driven; the interval only picks the sample moment.
+
+    CLLocationCoordinate2D coordinate = CLLocationCoordinate2DMake(0.0, 0.0);
+    double course = -1.0;
+    if (![_routeSimulator currentCoordinate:&coordinate course:&course]) {
+        return [self stationaryLocationAdvancing:NO];
+    }
+
+    os_unfair_lock_lock(&_lock);
+    double altitude = _configuration.altitude;
+    os_unfair_lock_unlock(&_lock);
+
+    double speed = [_routeSimulator currentSpeedMetersPerSecond];
+    CLLocation *location = [GPSLabLocationFactory routeLocationWithCoordinate:coordinate
+                                                                     altitude:altitude
+                                                                      heading:course
+                                                           speedMetersPerSec:speed];
+    [self didProduceLocation:location];
+    return location;
+}
+
+- (void)didProduceLocation:(CLLocation *)location {
+    GPSLabDiagGeneratedLocation();
+    [[NSNotificationCenter defaultCenter] postNotificationName:GPSLabLocationDidUpdateNotification
+                                                        object:self
+                                                      userInfo:@{@"location": location}];
 }
 
 @end
-
-#pragma mark - Helpers
-
-static double GPSLabRandomUnit(void) {
-    return (double)arc4random() / (double)UINT32_MAX;
-}
-
-static double GPSLabRandomInRange(double minValue, double maxValue) {
-    return minValue + ((maxValue - minValue) * GPSLabRandomUnit());
-}
-
-static CLLocationCoordinate2D GPSLabCoordinateFromOffsets(double baseLatitude,
-                                                          double baseLongitude,
-                                                          double northMeters,
-                                                          double eastMeters) {
-    double latitude = baseLatitude + (northMeters / kGPSLabMetersPerDegreeLatitude);
-    if (latitude > 90.0) {
-        latitude = 90.0;
-    } else if (latitude < -90.0) {
-        latitude = -90.0;
-    }
-
-    double cosLatitude = cos(latitude * M_PI / 180.0);
-    if (fabs(cosLatitude) < kGPSLabMinCosLatitude) {
-        cosLatitude = (cosLatitude < 0.0) ? -kGPSLabMinCosLatitude : kGPSLabMinCosLatitude;
-    }
-
-    double longitude = baseLongitude +
-        (eastMeters / (kGPSLabMetersPerDegreeLatitude * cosLatitude));
-    longitude = fmod(longitude + 540.0, 360.0) - 180.0;
-
-    return CLLocationCoordinate2DMake(latitude, longitude);
-}
-
-static double GPSLabDistanceMeters(CLLocationCoordinate2D from, CLLocationCoordinate2D to) {
-    double lat1 = from.latitude * M_PI / 180.0;
-    double lat2 = to.latitude * M_PI / 180.0;
-    double deltaLat = lat2 - lat1;
-    double deltaLon = (to.longitude - from.longitude) * M_PI / 180.0;
-
-    double sinHalfLat = sin(deltaLat / 2.0);
-    double sinHalfLon = sin(deltaLon / 2.0);
-    double h = (sinHalfLat * sinHalfLat) +
-        (cos(lat1) * cos(lat2) * sinHalfLon * sinHalfLon);
-    if (h > 1.0) {
-        h = 1.0;
-    }
-
-    return 2.0 * kGPSLabEarthRadiusMeters * asin(sqrt(h));
-}

@@ -1,0 +1,24 @@
+# GPSLab build outputs and local tooling caches.
+# Only generated artifacts are ignored here; Source/ and docs are always tracked.
+
+# Theos build products
+.theos/
+build/
+*.dylib
+*.zip
+
+# Object files / archives / symbols
+*.o
+*.a
+*.dSYM/
+*.swiftmodule
+
+# Local packages and tooling
+packages/
+scripts/tmp/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*~
+*.swp

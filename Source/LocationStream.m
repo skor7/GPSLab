@@ -2,7 +2,7 @@
 //  LocationStream.m
 //  GPSLab
 //
-//  Per-manager synthetic location streams.
+//  Per-manager synthetic location streams with intent tracking.
 //
 
 #import "LocationStream.h"
@@ -11,6 +11,7 @@
 
 #import "Diagnostics.h"
 #import "GPSLabEngine.h"
+#import "GPSLabStore.h"
 
 // Standard updates are delivered every second; significant-change updates are
 // intentionally much slower (real significant-change monitoring is throttled by
@@ -33,13 +34,20 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
 @interface GPSLabManagerState : NSObject
 
 @property (nonatomic, weak, nullable) CLLocationManager *manager;
-@property (atomic, assign) BOOL standardActive;
-@property (atomic, assign) BOOL significantActive;
+
+// Intent: what the host asked for. Survives suspend/background/disable.
+@property (atomic, assign) BOOL standardRequested;
+@property (atomic, assign) BOOL significantRequested;
+
+// Running: whether a synthetic timer is currently installed.
+@property (atomic, assign) BOOL standardRunning;
+@property (atomic, assign) BOOL significantRunning;
+
 @property (nonatomic, strong, nullable) dispatch_source_t standardTimer;
 @property (nonatomic, strong, nullable) dispatch_source_t significantTimer;
 
-- (void)invalidateStandardTimer;
-- (void)invalidateSignificantTimer;
+- (void)cancelStandardTimer;
+- (void)cancelSignificantTimer;
 - (void)deliverStandardLocationUpdate;
 - (void)deliverSignificantLocationUpdate;
 
@@ -47,30 +55,40 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
 
 @implementation GPSLabManagerState
 
-- (void)invalidateStandardTimer {
+- (void)cancelStandardTimer {
     if (self.standardTimer != nil) {
         dispatch_source_cancel(self.standardTimer);
         self.standardTimer = nil;
     }
+    self.standardRunning = NO;
 }
 
-- (void)invalidateSignificantTimer {
+- (void)cancelSignificantTimer {
     if (self.significantTimer != nil) {
         dispatch_source_cancel(self.significantTimer);
         self.significantTimer = nil;
     }
+    self.significantRunning = NO;
 }
 
 // ARC-managed cleanup: a dispatch source must be cancelled before its last
 // reference is released. When the weak-keyed registry drops this state because
 // its manager was deallocated, cancel both timers here.
 - (void)dealloc {
-    [self invalidateStandardTimer];
-    [self invalidateSignificantTimer];
+    dispatch_source_t standardTimer = _standardTimer;
+    if (standardTimer != nil) {
+        dispatch_source_cancel(standardTimer);
+        _standardTimer = nil;
+    }
+    dispatch_source_t significantTimer = _significantTimer;
+    if (significantTimer != nil) {
+        dispatch_source_cancel(significantTimer);
+        _significantTimer = nil;
+    }
 }
 
 - (void)deliverStandardLocationUpdate {
-    if (!self.standardActive) {
+    if (!self.standardRunning) {
         return;
     }
     CLLocationManager *manager = self.manager;
@@ -81,7 +99,7 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
 }
 
 - (void)deliverSignificantLocationUpdate {
-    if (!self.significantActive) {
+    if (!self.significantRunning) {
         return;
     }
     CLLocationManager *manager = self.manager;
@@ -122,37 +140,35 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
     return self;
 }
 
-#pragma mark - Public API
+#pragma mark - Synthetic control
 
-- (void)startStandardUpdatesForManager:(CLLocationManager *)manager {
+- (void)requestStandardForManager:(CLLocationManager *)manager {
     if (manager == nil) {
         return;
     }
+    if ([GPSLabCoreLocationHooks isBypassedManager:manager]) {
+        return;
+    }
+
+    // The intent is recorded even while the engine is disabled: the hook layer is
+    // still forwarding the call to the original implementation, and the request must
+    // survive until the engine (or the app) becomes active again.
+    BOOL enabled = [[GPSLabEngine sharedEngine] isEnabled];
 
     __block GPSLabManagerState *state = nil;
     __block BOOL started = NO;
 
+    CLLocationManager *managerForLock = manager;
     [self performLocked:^{
-        GPSLabManagerState *existing = [self stateLockedForManager:manager create:YES];
+        GPSLabManagerState *existing = [self stateLockedForManager:managerForLock create:YES];
         state = existing;
-        if (existing.standardActive) {
+        existing.standardRequested = YES;
+        if (!enabled || existing.standardRunning) {
             return;
         }
-
-        existing.standardActive = YES;
-        started = YES;
-
-        __weak GPSLabManagerState *weakState = existing;
-        dispatch_source_t timer = GPSLabCreateTimer(kGPSLabStandardIntervalSeconds, ^{
-            [weakState deliverStandardLocationUpdate];
-        });
-        if (timer == NULL) {
-            existing.standardActive = NO;
-            started = NO;
-            return;
+        if ([self startStandardTimerLocked:existing]) {
+            started = YES;
         }
-        existing.standardTimer = timer;
-        dispatch_resume(timer);
     }];
 
     if (started) {
@@ -163,51 +179,47 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
     }
 }
 
-- (void)stopStandardUpdatesForManager:(CLLocationManager *)manager {
+- (void)cancelStandardForManager:(CLLocationManager *)manager {
     if (manager == nil) {
         return;
     }
-
+    CLLocationManager *managerForLock = manager;
     [self performLocked:^{
-        GPSLabManagerState *state = [self stateLockedForManager:manager create:NO];
+        GPSLabManagerState *state = [self stateLockedForManager:managerForLock create:NO];
         if (state == nil) {
             return;
         }
-        state.standardActive = NO;
-        [state invalidateStandardTimer];
-        [self pruneStateLocked:state forManager:manager];
+        state.standardRequested = NO;
+        [state cancelStandardTimer];
+        [self pruneStateLocked:state forManager:managerForLock];
     }];
 }
 
-- (void)startSignificantUpdatesForManager:(CLLocationManager *)manager {
+- (void)requestSignificantForManager:(CLLocationManager *)manager {
     if (manager == nil) {
         return;
     }
+    if ([GPSLabCoreLocationHooks isBypassedManager:manager]) {
+        return;
+    }
+
+    // Intent survives a disabled engine exactly like the standard path above.
+    BOOL enabled = [[GPSLabEngine sharedEngine] isEnabled];
 
     __block GPSLabManagerState *state = nil;
     __block BOOL started = NO;
 
+    CLLocationManager *managerForLock = manager;
     [self performLocked:^{
-        GPSLabManagerState *existing = [self stateLockedForManager:manager create:YES];
+        GPSLabManagerState *existing = [self stateLockedForManager:managerForLock create:YES];
         state = existing;
-        if (existing.significantActive) {
+        existing.significantRequested = YES;
+        if (!enabled || existing.significantRunning) {
             return;
         }
-
-        existing.significantActive = YES;
-        started = YES;
-
-        __weak GPSLabManagerState *weakState = existing;
-        dispatch_source_t timer = GPSLabCreateTimer(kGPSLabSignificantIntervalSeconds, ^{
-            [weakState deliverSignificantLocationUpdate];
-        });
-        if (timer == NULL) {
-            existing.significantActive = NO;
-            started = NO;
-            return;
+        if ([self startSignificantTimerLocked:existing]) {
+            started = YES;
         }
-        existing.significantTimer = timer;
-        dispatch_resume(timer);
     }];
 
     if (started) {
@@ -218,19 +230,19 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
     }
 }
 
-- (void)stopSignificantUpdatesForManager:(CLLocationManager *)manager {
+- (void)cancelSignificantForManager:(CLLocationManager *)manager {
     if (manager == nil) {
         return;
     }
-
+    CLLocationManager *managerForLock = manager;
     [self performLocked:^{
-        GPSLabManagerState *state = [self stateLockedForManager:manager create:NO];
+        GPSLabManagerState *state = [self stateLockedForManager:managerForLock create:NO];
         if (state == nil) {
             return;
         }
-        state.significantActive = NO;
-        [state invalidateSignificantTimer];
-        [self pruneStateLocked:state forManager:manager];
+        state.significantRequested = NO;
+        [state cancelSignificantTimer];
+        [self pruneStateLocked:state forManager:managerForLock];
     }];
 }
 
@@ -238,7 +250,14 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
     if (manager == nil) {
         return;
     }
+    if (![[GPSLabEngine sharedEngine] isEnabled]) {
+        return;
+    }
+    if ([GPSLabCoreLocationHooks isBypassedManager:manager]) {
+        return;
+    }
 
+    // One-shot: no intent is retained.
     __weak CLLocationManager *weakManager = manager;
     dispatch_async(dispatch_get_main_queue(), ^{
         CLLocationManager *strongManager = weakManager;
@@ -251,6 +270,12 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
 
 - (void)notifyAuthorizationGrantedForManager:(CLLocationManager *)manager {
     if (manager == nil) {
+        return;
+    }
+    if (![[GPSLabEngine sharedEngine] isEnabled]) {
+        return;
+    }
+    if ([GPSLabCoreLocationHooks isBypassedManager:manager]) {
         return;
     }
 
@@ -283,28 +308,174 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
     });
 }
 
-- (void)unregisterManager:(CLLocationManager *)manager {
-    if (manager == nil) {
-        return;
-    }
+#pragma mark - Suspend / resume
+
+- (void)suspendAllSyntheticPreservingIntent {
+    [self performLocked:^{
+        NSArray<GPSLabManagerState *> *states = self->_states.objectEnumerator.allObjects;
+        for (GPSLabManagerState *state in states) {
+            // Stop synthetic timers but keep the recorded intent so a later
+            // enable/foreground can resume exactly what the host asked for.
+            [state cancelStandardTimer];
+            [state cancelSignificantTimer];
+        }
+    }];
+}
+
+- (void)resumeAllRequestedSynthetic {
+    // Starting the original streams back is the caller's responsibility; here we
+    // only re-arm the synthetic timers for managers that still have intent.
+    NSMutableArray<GPSLabManagerState *> *toStart = [NSMutableArray array];
 
     [self performLocked:^{
-        GPSLabManagerState *state = [self stateLockedForManager:manager create:NO];
-        if (state == nil) {
-            return;
+        NSArray<GPSLabManagerState *> *states = self->_states.objectEnumerator.allObjects;
+        for (GPSLabManagerState *state in states) {
+            CLLocationManager *manager = state.manager;
+            if (manager == nil) {
+                continue;
+            }
+            if ([GPSLabCoreLocationHooks isBypassedManager:manager]) {
+                continue;
+            }
+            [toStart addObject:state];
         }
-        state.standardActive = NO;
-        state.significantActive = NO;
-        [state invalidateStandardTimer];
-        [state invalidateSignificantTimer];
-        [self forgetStateLocked:state forManager:manager];
     }];
+
+    for (GPSLabManagerState *state in toStart) {
+        CLLocationManager *manager = state.manager;
+        if (manager == nil) {
+            continue;
+        }
+        if (state.standardRequested) {
+            [self startStandardForManagerDirectly:manager];
+        }
+        if (state.significantRequested) {
+            [self startSignificantForManagerDirectly:manager];
+        }
+    }
+}
+
+- (NSArray<CLLocationManager *> *)requestedManagers {
+    return [self managersMatchingIntent:^BOOL(GPSLabManagerState *state) {
+        return state.standardRequested || state.significantRequested;
+    }];
+}
+
+- (NSArray<CLLocationManager *> *)standardRequestedManagers {
+    return [self managersMatchingIntent:^BOOL(GPSLabManagerState *state) {
+        return state.standardRequested;
+    }];
+}
+
+- (NSArray<CLLocationManager *> *)significantRequestedManagers {
+    return [self managersMatchingIntent:^BOOL(GPSLabManagerState *state) {
+        return state.significantRequested;
+    }];
+}
+
+// Collects the non-bypassed managers whose state satisfies `predicate`.
+- (NSArray<CLLocationManager *> *)managersMatchingIntent:(BOOL (^)(GPSLabManagerState *state))predicate {
+    NSMutableArray<CLLocationManager *> *managers = [NSMutableArray array];
+    [self performLocked:^{
+        NSArray<GPSLabManagerState *> *states = self->_states.objectEnumerator.allObjects;
+        for (GPSLabManagerState *state in states) {
+            CLLocationManager *manager = state.manager;
+            if (manager == nil) {
+                continue;
+            }
+            if ([GPSLabCoreLocationHooks isBypassedManager:manager]) {
+                continue;
+            }
+            if (predicate(state)) {
+                [managers addObject:manager];
+            }
+        }
+    }];
+    return managers;
+}
+
+#pragma mark - Timer start helpers (must run on _registryQueue)
+
+- (BOOL)startStandardTimerLocked:(GPSLabManagerState *)state {
+    __weak GPSLabManagerState *weakState = state;
+    dispatch_source_t timer = GPSLabCreateTimer(kGPSLabStandardIntervalSeconds, ^{
+        [weakState deliverStandardLocationUpdate];
+    });
+    if (timer == NULL) {
+        return NO;
+    }
+    state.standardTimer = timer;
+    state.standardRunning = YES;
+    dispatch_resume(timer);
+    return YES;
+}
+
+- (BOOL)startSignificantTimerLocked:(GPSLabManagerState *)state {
+    __weak GPSLabManagerState *weakState = state;
+    dispatch_source_t timer = GPSLabCreateTimer(kGPSLabSignificantIntervalSeconds, ^{
+        [weakState deliverSignificantLocationUpdate];
+    });
+    if (timer == NULL) {
+        return NO;
+    }
+    state.significantTimer = timer;
+    state.significantRunning = YES;
+    dispatch_resume(timer);
+    return YES;
+}
+
+- (void)startStandardForManagerDirectly:(CLLocationManager *)manager {
+    if (manager == nil || ![GPSLabEngine sharedEngine].isEnabled) {
+        return;
+    }
+    __block GPSLabManagerState *state = nil;
+    CLLocationManager *managerForLock = manager;
+    [self performLocked:^{
+        GPSLabManagerState *existing = [self stateLockedForManager:managerForLock create:YES];
+        existing.standardRequested = YES;
+        if (!existing.standardRunning) {
+            [self startStandardTimerLocked:existing];
+        }
+        state = existing;
+    }];
+    if (state != nil) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [state deliverStandardLocationUpdate];
+        });
+    }
+}
+
+- (void)startSignificantForManagerDirectly:(CLLocationManager *)manager {
+    if (manager == nil || ![GPSLabEngine sharedEngine].isEnabled) {
+        return;
+    }
+    __block GPSLabManagerState *state = nil;
+    CLLocationManager *managerForLock = manager;
+    [self performLocked:^{
+        GPSLabManagerState *existing = [self stateLockedForManager:managerForLock create:YES];
+        existing.significantRequested = YES;
+        if (!existing.significantRunning) {
+            [self startSignificantTimerLocked:existing];
+        }
+        state = existing;
+    }];
+    if (state != nil) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [state deliverSignificantLocationUpdate];
+        });
+    }
 }
 
 #pragma mark - Delegate delivery
 
 + (void)deliverUpdateToManager:(CLLocationManager *)manager {
     if (manager == nil) {
+        return;
+    }
+    if (![[GPSLabEngine sharedEngine] isEnabled]) {
+        return;
+    }
+    if ([GPSLabCoreLocationHooks isBypassedManager:manager]) {
         return;
     }
 
@@ -317,9 +488,7 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
     }
 
     CLLocation *location = [[GPSLabEngine sharedEngine] nextLocation];
-    GPSLabDiagGeneratedCoordinate(location.coordinate.latitude,
-                                  location.coordinate.longitude,
-                                  location.altitude);
+    GPSLabDiagGeneratedLocation();
     [delegate locationManager:manager didUpdateLocations:@[ location ]];
 }
 
@@ -352,11 +521,13 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
     if (state == nil) {
         return;
     }
-    if (state.standardActive || state.significantActive) {
+    // Keep the state alive while any intent remains, even if no timer is running.
+    if (state.standardRequested || state.significantRequested ||
+        state.standardRunning || state.significantRunning) {
         return;
     }
-    [state invalidateStandardTimer];
-    [state invalidateSignificantTimer];
+    [state cancelStandardTimer];
+    [state cancelSignificantTimer];
     [self forgetStateLocked:state forManager:manager];
 }
 

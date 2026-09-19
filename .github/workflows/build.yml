@@ -5,11 +5,13 @@ on:
     paths:
       - 'Source/**'
       - 'Makefile'
+      - 'scripts/**'
       - '.github/workflows/build.yml'
   pull_request:
     paths:
       - 'Source/**'
       - 'Makefile'
+      - 'scripts/**'
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
@@ -17,9 +19,21 @@ permissions:
   contents: read
 
 jobs:
+  static:
+    name: Static validation (clean-room, ARC, Makefile)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run static validation
+        shell: bash
+        run: bash scripts/validate.sh
+
   build:
     name: Build GPSLab.dylib (arm64, iOS 16+)
     runs-on: ubuntu-22.04
+    needs: static
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,7 +88,7 @@ jobs:
           cp "$built" "$GITHUB_WORKSPACE/GPSLab.dylib"
           echo "path=$GITHUB_WORKSPACE/GPSLab.dylib" >> "$GITHUB_OUTPUT"
 
-      - name: Verify arm64, install_name and dependencies
+      - name: Verify arm64, min OS, install_name and dependencies
         shell: bash
         run: |
           python3 - "${{ steps.dylib.outputs.path }}" <<'PY'
@@ -85,6 +99,9 @@ jobs:
           CPU_TYPE_ARM64 = 0x0100000C
           LC_REQ_DYLD = 0x80000000
           LC_ID_DYLIB = 0x0D
+          LC_BUILD_VERSION = 0x32
+          LC_VERSION_MIN_IPHONEOS = 0x25
+          PLATFORM_IOS = 2
           DYLIB_COMMANDS = {
               0x0C,  # LC_LOAD_DYLIB
               0x18,  # LC_LOAD_WEAK_DYLIB (appears as 0x80000018)
@@ -94,6 +111,9 @@ jobs:
           HEADER_SIZE = 32
           MIN_COMMAND_SIZE = 8
           MAX_COMMANDS = 4096
+
+          def decode_version(value):
+              return f"{(value >> 16) & 0xFFFF}.{(value >> 8) & 0xFF}.{value & 0xFF}"
 
           path = sys.argv[1]
           with open(path, "rb") as handle:
@@ -120,6 +140,7 @@ jobs:
           offset = HEADER_SIZE
           install_name = None
           dependencies = []
+          min_os = None
 
           for _ in range(ncmds):
               if offset + MIN_COMMAND_SIZE > len(data):
@@ -147,16 +168,36 @@ jobs:
                       install_name = name
                   else:
                       dependencies.append(name)
+              elif base_cmd == LC_BUILD_VERSION:
+                  if cmdsize < 24:
+                      sys.exit("LC_BUILD_VERSION too small")
+                  platform, minos = struct.unpack_from("<II", data, offset + 8)
+                  if platform == PLATFORM_IOS:
+                      min_os = minos
+              elif base_cmd == LC_VERSION_MIN_IPHONEOS:
+                  if cmdsize < 16:
+                      sys.exit("LC_VERSION_MIN_IPHONEOS too small")
+                  min_os = struct.unpack_from("<I", data, offset + 8)[0]
 
               offset += cmdsize
 
           expected = "@executable_path/Frameworks/GPSLab.dylib"
+          # Packed version 16.0.0 in the X.Y.Z nibble layout used by LC_BUILD_VERSION /
+          # LC_VERSION_MIN_IPHONEOS: (major << 16) | (minor << 8) | patch.
+          minimum_ios = (16 << 16) | (0 << 8) | 0
           print("arch: arm64")
           print("install_name:", install_name)
+          print("min_os:", decode_version(min_os) if min_os is not None else "unknown")
           print("dependencies:", dependencies)
 
           if install_name != expected:
               sys.exit(f"unexpected install_name: {install_name!r} != {expected!r}")
+
+          if min_os is None:
+              sys.exit("no iOS minimum-OS load command found (LC_BUILD_VERSION/LC_VERSION_MIN_IPHONEOS)")
+
+          if min_os < minimum_ios:
+              sys.exit(f"minimum iOS deployment target below 16.0: {decode_version(min_os)}")
 
           banned = ("substrate", "ellekit", "libhooker")
           for dep in dependencies:
