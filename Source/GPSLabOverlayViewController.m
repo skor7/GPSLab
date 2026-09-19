@@ -119,7 +119,7 @@
         strongSelf.activeSearch = nil;
 
         if (error != nil) {
-            GPSLabStatusLogAppend(@"Search failed");
+            [GPSLabStatusLog append:@"Search failed"];
             strongSelf.results = @[];
         } else {
             strongSelf.results = response.mapItems ?: @[];
@@ -530,7 +530,7 @@
     mapView.translatesAutoresizingMaskIntoConstraints = NO;
     mapView.delegate = self;
     mapView.showsUserLocation = NO;
-    mapView.pointOfInterestFilter = MKPointOfInterestFilterIncludingAll;
+    mapView.pointOfInterestFilter = [MKPointOfInterestFilter filterIncludingAllCategories];
     [self.view insertSubview:mapView belowSubview:self.panel];
     self.mapView = mapView;
 
@@ -632,7 +632,7 @@
 
 - (void)enabledChanged {
     [[GPSLabEngine sharedEngine] setEnabledAndNotify:self.enabledSwitch.on];
-    GPSLabStatusLogAppend(self.enabledSwitch.on ? @"Engine enabled" : @"Engine disabled");
+    [GPSLabStatusLog append:(self.enabledSwitch.on ? @"Engine enabled" : @"Engine disabled")];
 }
 
 - (void)applyManualEntry {
@@ -659,13 +659,13 @@
     [self reloadPersistedState];
     [self updateCoordinateLabel];
     [self updateMapFromState];
-    GPSLabStatusLogAppend(@"Anchor applied");
+    [GPSLabStatusLog append:@"Anchor applied"];
 }
 
 - (void)keepLastChanged {
     [[GPSLabEngine sharedEngine] setKeepLastCoordinate:self.keepLastSwitch.on];
     [self loadCurrentConfigurationIntoFields];
-    GPSLabStatusLogAppend(self.keepLastSwitch.on ? @"Keep last on" : @"Keep last off");
+    [GPSLabStatusLog append:(self.keepLastSwitch.on ? @"Keep last on" : @"Keep last off")];
 }
 
 - (void)driftChanged {
@@ -701,7 +701,7 @@
     self.pendingRouteStartItem = [self mapItemForCoordinate:coordinate name:@"Start"];
     self.hasPendingStart = YES;
     [self updateRoutePins];
-    GPSLabStatusLogAppend(@"Route start set");
+    [GPSLabStatusLog append:@"Route start set"];
 }
 
 - (void)setRouteEnd {
@@ -709,7 +709,7 @@
     self.pendingRouteEndItem = [self mapItemForCoordinate:coordinate name:@"End"];
     self.hasPendingEnd = YES;
     [self updateRoutePins];
-    GPSLabStatusLogAppend(@"Route end set");
+    [GPSLabStatusLog append:@"Route end set"];
 }
 
 - (MKMapItem *)mapItemForCoordinate:(CLLocationCoordinate2D)coordinate name:(NSString *)name {
@@ -783,10 +783,10 @@
         }
         [self.displayLocationManager requestWhenInUseAuthorization];
         [self.displayLocationManager startUpdatingLocation];
-        GPSLabStatusLogAppend(@"Displaying real location (not persisted)");
+        [GPSLabStatusLog append:@"Displaying real location (not persisted)"];
     } else {
         [self stopRealLocationDisplay];
-        GPSLabStatusLogAppend(@"Real location display off");
+        [GPSLabStatusLog append:@"Real location display off"];
     }
 }
 
@@ -800,6 +800,7 @@
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     GPSLabOverlayViewController *__weak weakSelf = self;
     [alert addAction:[UIAlertAction actionWithTitle:@"Save" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+        (void)action; // The save path reads the text field, not the action object.
         GPSLabOverlayViewController *strongSelf = weakSelf;
         if (strongSelf == nil) {
             return;
@@ -889,6 +890,8 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
                                                                        handler:^(UIContextualAction *action,
                                                                                  UIView *sourceView,
                                                                                  void (^completionHandler)(BOOL)) {
+        (void)action;     // Unused: the row index path identifies the target.
+        (void)sourceView; // Unused: the action is not presented from a view.
         GPSLabOverlayViewController *strongSelf = weakSelf;
         if (strongSelf == nil) {
             completionHandler(NO);
@@ -1064,8 +1067,9 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
     GPSLabRouteSimulator *simulator = [[GPSLabEngine sharedEngine] routeSimulator];
     CLLocationCoordinate2D start = CLLocationCoordinate2DMake(0.0, 0.0);
     CLLocationCoordinate2D current = start;
+    double course = 0.0; // The polyline only needs positions; keep a real out-param.
     if ([simulator routeStartCoordinate:&start] &&
-        [simulator currentCoordinate:&current course:NULL]) {
+        [simulator currentCoordinate:&current course:&course]) {
         CLLocationCoordinate2D coordinates[2] = { start, current };
         self.routeOverlay = [MKPolyline polylineWithCoordinates:coordinates count:2];
         [self.mapView addOverlay:self.routeOverlay];
@@ -1133,6 +1137,7 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
     self.tickTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
                                                      repeats:YES
                                                        block:^(NSTimer *timer) {
+        (void)timer; // The tick only needs the current engine state.
         [weakSelf updateRouteStatus];
     }];
 }

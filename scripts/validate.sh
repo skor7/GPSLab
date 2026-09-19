@@ -94,6 +94,35 @@ require_declaring_import "GPSLabGeodesy.m" "GPSLabClampDouble" "GPSLabTypes.h"
 require_declaring_import "GPSLabDriftModel.m" "GPSLabClampDouble" "GPSLabTypes.h"
 require_declaring_import "GPSLabConfiguration.m" "GPSLabNormalizeHeading" "GPSLabGeodesy.h"
 
+# ------------------------------------------------- Declared-API usage ----------
+echo "== Declared-API usage invariants =="
+# These are deny-list guards for names that look plausible but do not exist in
+# the public SDK / the project. Each check only fires on the exact bad token, so
+# it stays non-brittle: any correct spelling passes untouched. They prevent the
+# same class of "implicit declaration"/"undeclared identifier" build breaks.
+STATUS_LOG="$SOURCE_DIR/GPSLabStatusLog.h"
+
+grep -q -F "+ (void)append:(NSString *)message;" "$STATUS_LOG" \
+    || fail "GPSLabStatusLog must declare +append:"
+if grep -r -n -F "GPSLabStatusLogAppend" "$SOURCE_DIR" >/dev/null 2>&1; then
+    grep -r -n -F "GPSLabStatusLogAppend" "$SOURCE_DIR" >&2 || true
+    fail "GPSLabStatusLogAppend is undeclared; call [GPSLabStatusLog append:]"
+fi
+pass "status log only uses the declared +append: API"
+
+if grep -r -n -F "MKPointOfInterestFilterIncludingAll" "$SOURCE_DIR" >/dev/null 2>&1; then
+    fail "MKPointOfInterestFilterIncludingAll is not a public MapKit symbol; use [MKPointOfInterestFilter filterIncludingAllCategories]"
+fi
+pass "MapKit point-of-interest filter uses the public class method"
+
+# currentCoordinate:course: is declared under NS_ASSUME_NONNULL_BEGIN, so a NULL
+# out-param is a -Wnonnull error under -Werror. A local variable must be passed.
+if grep -r -n -E 'course:[[:space:]]*NULL' "$SOURCE_DIR" >/dev/null 2>&1; then
+    grep -r -n -E 'course:[[:space:]]*NULL' "$SOURCE_DIR" >&2 || true
+    fail "currentCoordinate:course: rejects NULL; pass a local out-param variable"
+fi
+pass "no NULL passed to currentCoordinate:course:"
+
 # ------------------------------------------------------------- Clean-room -----
 echo "== Clean-room / dependency bans =="
 BANNED='substrate|ellekit|libhooker|cydia'
