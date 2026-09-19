@@ -13,6 +13,7 @@
 #import <math.h>
 
 #import "GPSLabGeodesy.h"
+#import "GPSLabTypes.h"
 
 static const double kGPSLabMaxTurnRadians = 0.6;      // ~34 degrees per step
 static const double kGPSLabMinStepFactor = 0.15;

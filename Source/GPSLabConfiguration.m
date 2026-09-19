@@ -6,6 +6,7 @@
 //
 
 #import "GPSLabConfiguration.h"
+#import "GPSLabGeodesy.h"
 
 #import <math.h>
 

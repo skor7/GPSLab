@@ -50,6 +50,50 @@ while IFS= read -r file; do
 done < <(find "$SOURCE_DIR" -name '*.m' -type f)
 pass "every source file is compiled by the Makefile"
 
+# ------------------------------------------------- Shared helper imports ------
+echo "== Shared helper declaration imports =="
+# A translation unit that calls a shared FOUNDATION_EXPORT helper must be able to
+# see its declaration, otherwise clang fails with "call to undeclared function"
+# (implicit declarations are errors in C99+). This resolves each unit's transitive
+# "#import \"...\"" closure and requires the declaring header to be reachable.
+# Non-brittle: the (symbol, header) pairs below are the only rules, the check only
+# fires when the symbol is actually referenced, and a transitive import satisfies
+# it instead of forcing a specific direct-import line.
+import_closure() {
+    local -a queue=("$1")
+    local -A seen=()
+    while ((${#queue[@]})); do
+        local name="${queue[0]}"
+        queue=("${queue[@]:1}")
+        [[ -n "${seen[$name]:-}" ]] && continue
+        seen[$name]=1
+        local path="$SOURCE_DIR/$name"
+        [[ -f "$path" ]] || continue
+        local dep
+        while IFS= read -r dep; do
+            [[ -n "$dep" ]] && queue+=("$dep")
+        done < <(grep -hoE '#import "[^"]+"' "$path" 2>/dev/null \
+            | sed -E 's/#import "(.*)"/\1/')
+    done
+    printf '%s\n' "${!seen[@]}"
+}
+
+require_declaring_import() {
+    local unit="$1" symbol="$2" header="$3"
+    local path="$SOURCE_DIR/$unit"
+    [[ -f "$path" ]] || fail "translation unit missing: Source/$unit"
+    grep -q -F "$symbol" "$path" || return 0
+    local closure
+    closure="$(import_closure "$unit")"
+    grep -qx -F "$header" <<<"$closure" \
+        || fail "Source/$unit uses $symbol but cannot see its declaration in $header"
+    pass "Source/$unit sees $symbol via $header"
+}
+
+require_declaring_import "GPSLabGeodesy.m" "GPSLabClampDouble" "GPSLabTypes.h"
+require_declaring_import "GPSLabDriftModel.m" "GPSLabClampDouble" "GPSLabTypes.h"
+require_declaring_import "GPSLabConfiguration.m" "GPSLabNormalizeHeading" "GPSLabGeodesy.h"
+
 # ------------------------------------------------------------- Clean-room -----
 echo "== Clean-room / dependency bans =="
 BANNED='substrate|ellekit|libhooker|cydia'
