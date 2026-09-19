@@ -277,6 +277,22 @@ grep -q -F "removeAnnotation:self.realLocationAnnotation" "$OVERLAY" \
     || fail "the real-location annotation must be removed when display is turned off"
 pass "real location uses a bypassed manager + separate annotation, never showsUserLocation"
 
+# ---------------------------------------------------- Overlay map layout --------
+echo "== Overlay map layout =="
+# The MKMapView must be a visible arranged subview of the dedicated map section,
+# never hidden behind the panel, and must carry an explicit height so the scroll
+# content can size. The ban targets the specific old map-behind-panel placement.
+if grep -n -E 'insertSubview:.*mapView.*belowSubview' "$OVERLAY" >/dev/null 2>&1; then
+    fail "overlay must not place the map behind the panel (insertSubview:mapView belowSubview:)"
+fi
+grep -q -F -e "- (UIStackView *)buildMapSection" "$OVERLAY" \
+    || fail "overlay must build the map as a dedicated map section"
+grep -q -F "initWithArrangedSubviews:@[self.mapView," "$OVERLAY" \
+    || fail "overlay map must be the first arranged subview of the map section stack"
+grep -q -F "mapView.heightAnchor constraintEqualToConstant" "$OVERLAY" \
+    || fail "overlay map must declare an explicit height constraint"
+pass "map is a visible arranged subview with an explicit height, not behind the panel"
+
 # --------------------------------------------------------------- Search --------
 echo "== Search request hygiene =="
 grep -q -F "activeSearch" "$OVERLAY" || fail "search must track an active MKLocalSearch"

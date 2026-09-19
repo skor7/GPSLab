@@ -31,6 +31,28 @@
 @implementation GPSLabSyntheticAnnotation
 @end
 
+#pragma mark - Overlay scroll view
+
+// The overlay content scroll view hosts an interactive MKMapView. It keeps normal
+// touch cancellation for fields/buttons (so the panel scrolls as expected) but never
+// cancels touches that begin on the map, which would break MapKit pan/zoom. This is
+// the minimal override; no gesture delegate is involved.
+@interface GPSLabOverlayScrollView : UIScrollView
+@end
+
+@implementation GPSLabOverlayScrollView
+
+- (BOOL)touchesShouldCancelInContentView:(UIView *)view {
+    for (UIView *candidate = view; candidate != nil; candidate = candidate.superview) {
+        if ([candidate isKindOfClass:[MKMapView class]]) {
+            return NO;
+        }
+    }
+    return [super touchesShouldCancelInContentView:view];
+}
+
+@end
+
 #pragma mark - Search results
 
 @interface GPSLabSearchResultsViewController : UITableViewController <UISearchResultsUpdating>
@@ -165,6 +187,7 @@
 @property (nonatomic, strong) MKPointAnnotation *routeEndPin;
 @property (nonatomic, strong) GPSLabSyntheticAnnotation *syntheticAnnotation;
 @property (nonatomic, strong) MKPolyline *routeOverlay;
+@property (nonatomic, strong, nullable) NSLayoutConstraint *mapHeightConstraint;
 
 @property (nonatomic, strong) UISwitch *enabledSwitch;
 @property (nonatomic, strong) UITextField *latitudeField;
@@ -220,8 +243,9 @@
 
     self.view.backgroundColor = UIColor.clearColor;
     [self buildBackground];
-    [self buildPanel];
+    // The map is constructed first so the panel can embed it in the scroll content.
     [self buildMap];
+    [self buildPanel];
     [self buildSearch];
     [self attachSelectionHandler];
     [self reloadPersistedState];
@@ -257,6 +281,17 @@
     [self stopRealLocationDisplay];
 }
 
+- (void)viewWillLayoutSubviews {
+    [super viewWillLayoutSubviews];
+    // Reconcile the map height with the current orientation each layout pass; only
+    // assign on change so Auto Layout never loops. The map stays inside the scroll
+    // content, so a short landscape simply scrolls instead of clipping.
+    CGFloat height = [self preferredMapHeight];
+    if (self.mapHeightConstraint.constant != height) {
+        self.mapHeightConstraint.constant = height;
+    }
+}
+
 #pragma mark - Construction
 
 - (void)buildBackground {
@@ -274,9 +309,13 @@
     [self.view addSubview:panel];
     self.panel = panel;
 
-    UIScrollView *scrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
+    GPSLabOverlayScrollView *scrollView = [[GPSLabOverlayScrollView alloc] initWithFrame:CGRectZero];
     scrollView.translatesAutoresizingMaskIntoConstraints = NO;
     scrollView.alwaysBounceVertical = YES;
+    // Give the embedded map touches immediately (no 150ms delay). Cancellation stays
+    // enabled for fields/buttons, while GPSLabOverlayScrollView refuses to cancel
+    // touches that begin inside MKMapView so map pan/zoom is preserved.
+    scrollView.delaysContentTouches = NO;
     [panel.contentView addSubview:scrollView];
     self.scrollView = scrollView;
 
@@ -301,6 +340,7 @@
     UIStackView *column = [[UIStackView alloc] initWithArrangedSubviews:@[
         header,
         self.coordinateLabel,
+        [self buildMapSection],
         [self buildAnchorSection],
         [self buildDriftSection],
         [self buildRouteSection],
@@ -313,6 +353,8 @@
     [scrollView addSubview:column];
 
     UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
+    UILayoutGuide *contentGuide = scrollView.contentLayoutGuide;
+    UILayoutGuide *frameGuide = scrollView.frameLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [panel.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:12.0],
         [panel.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-12.0],
@@ -324,11 +366,14 @@
         [scrollView.topAnchor constraintEqualToAnchor:panel.contentView.topAnchor],
         [scrollView.bottomAnchor constraintEqualToAnchor:panel.contentView.bottomAnchor],
 
-        [column.leadingAnchor constraintEqualToAnchor:scrollView.leadingAnchor constant:16.0],
-        [column.trailingAnchor constraintEqualToAnchor:scrollView.trailingAnchor constant:-16.0],
-        [column.topAnchor constraintEqualToAnchor:scrollView.topAnchor constant:16.0],
-        [column.bottomAnchor constraintEqualToAnchor:scrollView.bottomAnchor constant:-16.0],
-        [column.widthAnchor constraintEqualToAnchor:scrollView.widthAnchor constant:-32.0],
+        // Content size is defined by contentLayoutGuide; the width is pinned to the
+        // visible frameLayoutGuide (minus insets) so there is never horizontal scroll
+        // and vertical scrolling works in portrait and landscape.
+        [column.leadingAnchor constraintEqualToAnchor:contentGuide.leadingAnchor constant:16.0],
+        [column.trailingAnchor constraintEqualToAnchor:contentGuide.trailingAnchor constant:-16.0],
+        [column.topAnchor constraintEqualToAnchor:contentGuide.topAnchor constant:16.0],
+        [column.bottomAnchor constraintEqualToAnchor:contentGuide.bottomAnchor constant:-16.0],
+        [column.widthAnchor constraintEqualToAnchor:frameGuide.widthAnchor constant:-32.0],
     ]];
 }
 
@@ -356,7 +401,6 @@
     self.headingField = [self decimalFieldWithPlaceholder:@"Course (deg or -1)"];
 
     UIButton *applyButton = [self actionButtonWithTitle:@"Apply" action:@selector(applyManualEntry)];
-    UIButton *centerButton = [self actionButtonWithTitle:@"Center on synthetic" action:@selector(centerOnSynthetic)];
 
     self.keepLastSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
     [self.keepLastSwitch addTarget:self action:@selector(keepLastChanged) forControlEvents:UIControlEventValueChanged];
@@ -373,7 +417,6 @@
         self.altitudeField,
         self.headingField,
         applyButton,
-        centerButton,
         keepLastRow,
         showRealRow,
     ]];
@@ -381,6 +424,37 @@
     content.spacing = 8.0;
 
     return [self sectionWithTitle:@"Anchor" content:content];
+}
+
+- (UIStackView *)buildMapSection {
+    // Search and Center live next to the map, reusing the existing handlers.
+    UIButton *searchButton = [self actionButtonWithTitle:@"Search" action:@selector(presentSearch)];
+    UIButton *centerButton = [self actionButtonWithTitle:@"Center on synthetic" action:@selector(centerOnSynthetic)];
+
+    UIStackView *buttonRow = [[UIStackView alloc] initWithArrangedSubviews:@[searchButton, centerButton]];
+    buttonRow.axis = UILayoutConstraintAxisHorizontal;
+    buttonRow.distribution = UIStackViewDistributionFillEqually;
+    buttonRow.spacing = 8.0;
+
+    // A fixed, adaptive height keeps the map readable in both orientations while the
+    // enclosing scroll view absorbs any short-landscape overflow (no conflicting
+    // constraints with the scroll content).
+    self.mapHeightConstraint = [self.mapView.heightAnchor constraintEqualToConstant:[self preferredMapHeight]];
+    self.mapHeightConstraint.active = YES;
+
+    UIStackView *content = [[UIStackView alloc] initWithArrangedSubviews:@[self.mapView, buttonRow]];
+    content.axis = UILayoutConstraintAxisVertical;
+    content.spacing = 8.0;
+
+    return [self sectionWithTitle:@"Map" content:content];
+}
+
+- (CGFloat)preferredMapHeight {
+    // Compact vertical size class (e.g. landscape iPhone) gets the lower bound.
+    if (self.traitCollection.verticalSizeClass == UIUserInterfaceSizeClassCompact) {
+        return 280.0;
+    }
+    return 300.0;
 }
 
 - (UIStackView *)buildDriftSection {
@@ -525,22 +599,18 @@
 }
 
 - (void)buildMap {
-    // The map is placed behind the panel so both stay usable.
+    // The map is a visible arranged subview of the panel's scroll content (inserted
+    // by buildMapSection). It is intentionally NOT placed behind the panel.
     MKMapView *mapView = [[MKMapView alloc] initWithFrame:CGRectZero];
     mapView.translatesAutoresizingMaskIntoConstraints = NO;
     mapView.delegate = self;
     mapView.showsUserLocation = NO;
     mapView.pointOfInterestFilter = [MKPointOfInterestFilter filterIncludingAllCategories];
-    [self.view insertSubview:mapView belowSubview:self.panel];
+    // Keep MapKit interaction enabled; the outer scroll view is configured in
+    // buildPanel to not steal touches that begin on the map.
+    mapView.scrollEnabled = YES;
+    mapView.zoomEnabled = YES;
     self.mapView = mapView;
-
-    UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
-    [NSLayoutConstraint activateConstraints:@[
-        [mapView.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor],
-        [mapView.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor],
-        [mapView.topAnchor constraintEqualToAnchor:safeArea.topAnchor],
-        [mapView.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor],
-    ]];
 
     UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(mapTapped:)];
     [mapView addGestureRecognizer:tap];
