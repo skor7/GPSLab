@@ -282,6 +282,13 @@ static BOOL GPSLabReadTimestamp(NSDictionary *dictionary, NSString *key, BOOL al
         return nil;
     }
 
+    NSString *normalizedStatus = [status lowercaseString];
+    NSSet<NSString *> *allowedStatuses = [NSSet setWithObjects:@"active", @"grace", @"expired", @"revoked", nil];
+    if (![allowedStatuses containsObject:normalizedStatus]) {
+        GPSLabSetError(error, GPSLabLicenseErrorInvalidClaims);
+        return nil;
+    }
+
     long long issuedAt = 0;
     long long expiresAt = 0;
     long long graceUntil = 0;
@@ -291,19 +298,28 @@ static BOOL GPSLabReadTimestamp(NSDictionary *dictionary, NSString *key, BOOL al
         GPSLabSetError(error, GPSLabLicenseErrorUnsafeTime);
         return nil;
     }
-    if (issuedAt > expiresAt) {
-        GPSLabSetError(error, GPSLabLicenseErrorUnsafeTime);
-        return nil;
-    }
-    if (graceUntil != 0 && graceUntil < expiresAt) {
-        GPSLabSetError(error, GPSLabLicenseErrorUnsafeTime);
-        return nil;
-    }
 
-    NSString *normalizedStatus = [status lowercaseString];
-    NSSet<NSString *> *allowedStatuses = [NSSet setWithObjects:@"active", @"grace", @"expired", @"revoked", nil];
-    if (![allowedStatuses containsObject:normalizedStatus]) {
-        GPSLabSetError(error, GPSLabLicenseErrorInvalidClaims);
+    // The server always signs its TRUTHFUL current time as `issuedAt`. For an
+    // authoritative status that can be produced after the subscription lapsed
+    // (grace/expired/revoked), `issuedAt` legitimately exceeds `expiresAt`; that is
+    // still a signed server statement about a locked or grace state. For `active`,
+    // a reversed interval remains unsafe and is rejected.
+    BOOL statusMayFollowExpiry = [normalizedStatus isEqualToString:@"grace"] ||
+                                 [normalizedStatus isEqualToString:@"expired"] ||
+                                 [normalizedStatus isEqualToString:@"revoked"];
+    if (!statusMayFollowExpiry && issuedAt > expiresAt) {
+        GPSLabSetError(error, GPSLabLicenseErrorUnsafeTime);
+        return nil;
+    }
+    // An inconsistent state/time combination fails closed: `grace` requires a real
+    // window at/after expiry, and any other state rejects a reversed grace window.
+    if ([normalizedStatus isEqualToString:@"grace"]) {
+        if (graceUntil <= expiresAt) {
+            GPSLabSetError(error, GPSLabLicenseErrorUnsafeTime);
+            return nil;
+        }
+    } else if (graceUntil != 0 && graceUntil < expiresAt) {
+        GPSLabSetError(error, GPSLabLicenseErrorUnsafeTime);
         return nil;
     }
 

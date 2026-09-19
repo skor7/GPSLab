@@ -341,7 +341,102 @@ int main(void) {
                                        claims.expiresAt, claims.graceUntil, 604800) ==
                   GPSLabEntitlementStateInvalid, @"revocation resolves invalid");
 
-        // 15) Config parsing: HTTPS required, base64 key decoded, build-time empty default.
+        // 16) Server-truthful issuedAt: the server signs its current time even when the
+        //     subscription already lapsed, so a fresh issuedAt with a past expiry must
+        //     verify for grace/expired/revoked (and only those states).
+        error = nil;
+        long long pastExpiry = now - 3600;
+        NSData *graceEnvelope = GPSLabEnvelopeFromClaims(
+            GPSLabClaimsRaw(installation, @"grace", @(now), @(pastExpiry), @(now + 43200)),
+            privateKey, NULL);
+        claims = GPSLabVerify(graceEnvelope, spki, installation, &error);
+        CHECK(claims != nil && [claims.status isEqualToString:@"grace"],
+              @"fresh issuedAt with past expiry verifies for grace");
+        CHECK(claims != nil &&
+                  GPSLabLicenseStateForTime(now, claims.expiresAt, claims.graceUntil, 604800) ==
+                      GPSLabEntitlementStateGrace,
+              @"grace past expiry resolves unlocked grace");
+        error = nil;
+        NSData *expiredServerEnvelope = GPSLabEnvelopeFromClaims(
+            GPSLabClaimsRaw(installation, @"expired", @(now), @(now - 86400), @0), privateKey, NULL);
+        claims = GPSLabVerify(expiredServerEnvelope, spki, installation, &error);
+        CHECK(claims != nil && [claims.status isEqualToString:@"expired"],
+              @"fresh issuedAt with past expiry verifies for expired");
+        CHECK(claims != nil &&
+                  GPSLabLicenseStateForTime(now, claims.expiresAt, claims.graceUntil, 604800) ==
+                      GPSLabEntitlementStateExpired,
+              @"expired past expiry resolves expired (locked)");
+        error = nil;
+        NSData *revokedServerEnvelope = GPSLabEnvelopeFromClaims(
+            GPSLabClaimsRaw(installation, @"revoked", @(now), @(now - 86400), @0), privateKey, NULL);
+        claims = GPSLabVerify(revokedServerEnvelope, spki, installation, &error);
+        CHECK(claims != nil && [claims.status isEqualToString:@"revoked"],
+              @"fresh issuedAt with past expiry verifies for revoked");
+        CHECK(claims != nil &&
+                  GPSLabLicenseResolveAuth(1, GPSLabLicenseAuthStatusRevoked, now,
+                                           claims.expiresAt, claims.graceUntil, 604800) ==
+                      GPSLabEntitlementStateInvalid,
+              @"revoked past expiry stays locked");
+
+        // 17) Inconsistent state/time combinations still fail closed; an authoritative
+        //     signed status never unlocks.
+        error = nil;
+        claims = GPSLabVerify(GPSLabEnvelopeFromClaims(
+                                  GPSLabClaimsRaw(installation, @"grace", @(now), @(now - 3600), @0),
+                                  privateKey, NULL),
+                              spki, installation, &error);
+        CHECK(claims == nil && error.code == GPSLabLicenseErrorUnsafeTime,
+              @"grace without a real grace window rejected");
+        error = nil;
+        claims = GPSLabVerify(GPSLabEnvelopeFromClaims(
+                                  GPSLabClaimsRaw(installation, @"grace", @(now), @(now - 3600), @(now - 7200)),
+                                  privateKey, NULL),
+                              spki, installation, &error);
+        CHECK(claims == nil && error.code == GPSLabLicenseErrorUnsafeTime,
+              @"grace with graceUntil before expiry rejected");
+        error = nil;
+        claims = GPSLabVerify(GPSLabEnvelopeFromClaims(
+                                  GPSLabClaimsRaw(installation, @"expired", @(now), @(now + 86400), @0),
+                                  privateKey, NULL),
+                              spki, installation, &error);
+        CHECK(claims != nil, @"signed expired status still verifies");
+        CHECK(claims != nil &&
+                  GPSLabLicenseResolveAuth(1, GPSLabLicenseAuthStatusExpired, now,
+                                           claims.expiresAt, claims.graceUntil, 604800) ==
+                      GPSLabEntitlementStateExpired,
+              @"signed expired status stays locked regardless of the expiry value");
+
+        // 18) A cross-key signature is rejected; optional envelope fields are ignored so
+        //     a future key rotation (keyId hint) never changes the verification contract.
+        error = nil;
+        CFErrorRef crossKeyError = NULL;
+        SecKeyRef otherKey = SecKeyCreateRandomKey((__bridge CFDictionaryRef)keyAttributes, &crossKeyError);
+        if (crossKeyError != NULL) {
+            CFRelease(crossKeyError);
+            crossKeyError = NULL;
+        }
+        CHECK(otherKey != NULL, @"second ephemeral key generated");
+        if (otherKey != NULL) {
+            NSData *crossEnvelope = GPSLabEnvelopeFromClaims(goodClaims, otherKey, NULL);
+            claims = GPSLabVerify(crossEnvelope, spki, installation, &error);
+            CHECK(claims == nil && error.code == GPSLabLicenseErrorBadSignature,
+                  @"signature from a different key rejected");
+            CFRelease(otherKey);
+        }
+        error = nil;
+        NSDictionary *envelopeObject = [NSJSONSerialization JSONObjectWithData:validEnvelope
+                                                                      options:0
+                                                                        error:NULL];
+        NSMutableDictionary *withExtras = [envelopeObject mutableCopy];
+        withExtras[@"keyId"] = @"rotated-key-2";
+        withExtras[@"refreshToken"] = @"not-a-real-token";
+        withExtras[@"futureField"] = @{@"any": @"value"};
+        NSData *extraEnvelopeData = [NSJSONSerialization dataWithJSONObject:withExtras options:0 error:NULL];
+        claims = GPSLabVerify(extraEnvelopeData, spki, installation, &error);
+        CHECK(claims != nil && [claims.entitlementId isEqualToString:@"ent-unit-test"],
+              @"extra envelope fields (keyId/refreshToken/future) are ignored");
+
+        // 19) Config parsing: HTTPS required, base64 key decoded, build-time empty default.
         GPSLabLicenseConfig *unconfigured = [GPSLabLicenseConfig configFromInfoDictionary:@{}];
         CHECK(!unconfigured.isConfigured, @"empty config is not configured");
         GPSLabLicenseConfig *httpConfig = [GPSLabLicenseConfig configFromInfoDictionary:@{

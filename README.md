@@ -224,6 +224,11 @@ Payload claims: `entitlementId`, `installationId`, `plan`, `status`
 (`active|grace|expired|revoked`), `issuedAt`, `expiresAt`, `graceUntil`, `issuer`,
 `audience`. Timestamps are Unix seconds and must be integral, positive and within
 `2100-01-01`; `issuedAt` may not exceed local time by more than the configured skew.
+The server signs its truthful current time, so for the already-lapsed states `grace`,
+`expired` and `revoked`, `issuedAt` may legitimately exceed `expiresAt`; `grace` still
+requires `graceUntil > expiresAt`, and `active` with `issuedAt > expiresAt` (or any other
+inconsistent state/time combination) is rejected. The optional envelope `keyId` is a
+diagnostic hint and is ignored.
 
 The raw envelope is capped (256 KiB default) and rejected **before** any JSON/base64
 work; the payload, encoded payload string, signature string and public key all have
@@ -234,7 +239,8 @@ are rejected, and only the extracted point is imported.
 Rejected as invalid: malformed JSON, unsupported/ fractional/boolean version or alg,
 oversized envelope/payload/signature/key, bad key shape, invalid signature,
 missing/invalid claims, installation mismatch, issuer/audience mismatch, or unsafe
-(including future-dated) timestamps.
+timestamps (a future-dated `issuedAt`, an `active` token whose `issuedAt > expiresAt`, or
+a `grace` token without a real `graceUntil > expiresAt` window).
 
 ### Secure flow
 

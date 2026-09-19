@@ -212,6 +212,8 @@ passed from CI alone.** All rows are device-manual.
 | 4.2.12 | Server returns a token whose `issuedAt` is far in the future. | Rejected beyond the allowed skew; a valid cache is not revoked. |
 | 4.2.13 | Proxy inserts an HTTP/HTTPS redirect to another host. | Redirect is not followed; the code/token is never forwarded. |
 | 4.2.14 | Response body exceeds the cap while streaming. | The task is cancelled as soon as the cap is exceeded; treated as a failed check. |
+| 4.2.15 | Serve a signed `grace`/`expired`/`revoked` token whose `expiresAt` is in the past (the server signs its truthful current `issuedAt`). | Verifies; `grace` unlocks only inside a real `graceUntil`, `expired`/`revoked` lock. |
+| 4.2.16 | Serve an `active` token with `issuedAt > expiresAt`, or a `grace` token with `graceUntil <= expiresAt`. | Rejected as unsafe time; fail-closed. |
 
 ### 4.3 Offline, clock and grace
 

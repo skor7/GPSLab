@@ -26,7 +26,11 @@
 //  base64 work), malformed JSON, unsupported version/alg, fractional/boolean/oversized
 //  numeric fields, oversized payload/signature/key, bad key shape, invalid signature,
 //  missing/invalid claims, installation mismatch, issuer/audience mismatch, or unsafe
-//  timestamps.
+//  timestamps. `issuedAt > expiresAt` is rejected for `status=active`, but the server
+//  may truthfully sign its current time after expiry for `grace`/`expired`/`revoked`
+//  (grace additionally requires `graceUntil > expiresAt`); any inconsistent state/time
+//  combination fails closed. The optional envelope `keyId` is a diagnostic hint and is
+//  ignored, so a future key rotation never changes the verification contract.
 //
 
 #import <Foundation/Foundation.h>
