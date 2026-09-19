@@ -48,6 +48,13 @@ FOUNDATION_EXPORT NSNotificationName const GPSLabLocationDidUpdateNotification;
 
 @property (nonatomic, assign, getter=isEnabled) BOOL enabled;
 
+/**
+ * Entitlement gate. The engine can only synthesize when this is YES; it defaults to
+ * NO so a persisted `enabled` value can never bypass licensing. Set only by
+ * GPSLabLicenseManager.
+ */
+@property (nonatomic, assign, getter=isEntitlementAllowsSynthesis) BOOL entitlementAllowsSynthesis;
+
 /** Toggles the master switch, sends diagnostics and posts a state notification. */
 - (void)setEnabledAndNotify:(BOOL)enabled;
 

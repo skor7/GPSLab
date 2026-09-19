@@ -12,11 +12,14 @@
 #import <UIKit/UIKit.h>
 
 #import "Diagnostics.h"
+#import "GPSLabLicenseManager.h"
 #import "GPSLabOverlayViewController.h"
+#import "GPSLabPrimaryInterface.h"
+#import "GPSLabSubscriptionViewController.h"
 
 @interface GPSLabOverlayPresenter ()
 @property (nonatomic, strong, nullable) UIWindow *overlayWindow;
-@property (nonatomic, strong, nullable) GPSLabOverlayViewController *overlayViewController;
+@property (nonatomic, strong, nullable) UIViewController *primaryViewController;
 @property (nonatomic, assign, getter=isPresenting) BOOL presenting;
 @end
 @implementation GPSLabOverlayPresenter
@@ -28,6 +31,19 @@
         instance = [[GPSLabOverlayPresenter alloc] init];
     });
     return instance;
+}
+
+- (instancetype)init {
+    self = [super init];
+    if (self) {
+        // Swap the window's root in place when the entitlement unlocks/locks while the
+        // overlay is open. The window and its scene are never re-created here.
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(licenseStateDidChange:)
+                                                     name:GPSLabLicenseStateDidChangeNotification
+                                                   object:nil];
+    }
+    return self;
 }
 
 + (BOOL)install {
@@ -116,10 +132,13 @@ static UIWindow *GPSLabKeyWindow(void) {
         UIWindow *window = [[UIWindow alloc] initWithWindowScene:scene];
         window.windowLevel = UIWindowLevelAlert + 1.0;
         window.backgroundColor = UIColor.clearColor;
-        window.rootViewController = [[GPSLabOverlayViewController alloc] init];
+        // Single selection point: the primary interface is the map-first overlay today
+        // and can become a subscription screen in a later phase without touching the
+        // runtime, hook layer or this presenter.
+        window.rootViewController = [GPSLabPrimaryInterface makePrimaryViewController];
         window.hidden = NO;
         self.overlayWindow = window;
-        self.overlayViewController = (GPSLabOverlayViewController *)window.rootViewController;
+        self.primaryViewController = window.rootViewController;
     }
 
     self.overlayWindow.hidden = NO;
@@ -135,7 +154,7 @@ static UIWindow *GPSLabKeyWindow(void) {
     self.overlayWindow.hidden = YES;
     self.overlayWindow.rootViewController = nil;
     self.overlayWindow = nil;
-    self.overlayViewController = nil;
+    self.primaryViewController = nil;
     self.presenting = NO;
     GPSLabDiagOverlayClosed();
 }
@@ -171,6 +190,27 @@ static UIWindow *GPSLabKeyWindow(void) {
 
 - (void)handleWillEnterForeground {
     [self handleSceneChange];
+}
+
+#pragma mark - Entitlement transitions
+
+- (void)licenseStateDidChange:(NSNotification *)notification {
+    (void)notification;
+    if (!self.presenting || self.overlayWindow == nil) {
+        return;
+    }
+    BOOL unlocked = [[GPSLabLicenseManager sharedManager] isUnlocked];
+    BOOL showingSubscription =
+        [self.overlayWindow.rootViewController isKindOfClass:[GPSLabSubscriptionViewController class]];
+    BOOL showingCanvas = [self.overlayWindow.rootViewController isKindOfClass:[GPSLabOverlayViewController class]];
+
+    if (unlocked && showingSubscription) {
+        self.overlayWindow.rootViewController = [[GPSLabOverlayViewController alloc] init];
+        self.primaryViewController = self.overlayWindow.rootViewController;
+    } else if (!unlocked && showingCanvas) {
+        self.overlayWindow.rootViewController = [[GPSLabSubscriptionViewController alloc] init];
+        self.primaryViewController = self.overlayWindow.rootViewController;
+    }
 }
 
 @end

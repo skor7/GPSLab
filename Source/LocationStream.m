@@ -9,7 +9,6 @@
 
 #import <objc/runtime.h>
 
-#import "Diagnostics.h"
 #import "GPSLabEngine.h"
 #import "GPSLabStore.h"
 
@@ -488,7 +487,10 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
     }
 
     CLLocation *location = [[GPSLabEngine sharedEngine] nextLocation];
-    GPSLabDiagGeneratedLocation();
+    if (location == nil) {
+        // The entitlement gate closed between the enabled check and generation.
+        return;
+    }
     [delegate locationManager:manager didUpdateLocations:@[ location ]];
 }
 
@@ -512,7 +514,6 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
                                  &kGPSLabManagerStateKey,
                                  state,
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        GPSLabDiagManagerRegistered();
     }
     return state;
 }
@@ -537,7 +538,6 @@ static dispatch_source_t GPSLabCreateTimer(double intervalSeconds, dispatch_bloc
     }
     [_states removeObjectForKey:manager];
     objc_setAssociatedObject(manager, &kGPSLabManagerStateKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    GPSLabDiagManagerUnregistered();
 }
 
 @end

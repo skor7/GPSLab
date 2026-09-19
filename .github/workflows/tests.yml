@@ -1,0 +1,53 @@
+name: GPSLab tests
+
+on:
+  push:
+    paths:
+      - 'Source/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - '.github/workflows/tests.yml'
+  pull_request:
+    paths:
+      - 'Source/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - '.github/workflows/tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy-tests:
+    name: License policy (portable C)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portable policy tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/license_policy_test.c -o /tmp/license_policy_test
+          /tmp/license_policy_test
+
+  crypto-tests:
+    name: Signed-token verifier (macOS Security.framework)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run ObjC crypto tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -framework Security \
+            -ISource \
+            tests/GPSLabLicenseTests.m \
+            Source/GPSLabTokenVerifier.m \
+            Source/GPSLabLicenseConfig.m \
+            -o /tmp/gpslab-license-tests
+          /tmp/gpslab-license-tests

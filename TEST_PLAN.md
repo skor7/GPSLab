@@ -7,9 +7,11 @@ prove the source/build contract; only the device layer proves behavior.
 Layers:
 
 1. **Static (no toolchain, runs anywhere):** `bash scripts/validate.sh`
-2. **CI build contract:** the `static` and `build` jobs in
+2. **Portable policy + macOS crypto tests:** the `policy-tests` and `crypto-tests`
+   jobs in `.github/workflows/tests.yml`
+3. **CI build contract:** the `static` and `build` jobs in
    `.github/workflows/build.yml`
-3. **Device manual:** the matrix below on a real device or signed IPA
+4. **Device manual:** the matrix below on a real device or signed IPA
 
 ---
 
@@ -170,6 +172,74 @@ Legend: **[Clean]** = injected into a freshly installed IPA never previously tes
 | 3.10.5 | Inspect the injected binary. | No banned hooking strings; install name correct. |
 
 ---
+
+## 4. Subscription / entitlement matrix (v2)
+
+These rows require a host app configured with `GPSLabLicenseEndpoint`,
+`GPSLabLicensePublicKey`, and (optionally) the sign-in/manage URLs, plus a real signing
+backend. **CI proves the crypto and state contract only; no row below may be marked
+passed from CI alone.** All rows are device-manual.
+
+### 4.1 States and gating
+
+| # | Steps | Expected |
+|---|-------|----------|
+| 4.1.1 | Launch with no endpoint/key configured. | Locked; subscription screen states the service is unavailable in this build; no synthetic fixes; host gets real CoreLocation. |
+| 4.1.2 | Launch with a valid verified cache. | Active immediately (cache-first), engine unlocked; a silent refresh runs. |
+| 4.1.3 | Launch with no cache, endpoint configured. | Checking, then Active on a valid signed response; engine unlocks at that point. |
+| 4.1.4 | Persisted `enabled = YES`, then launch locked. | Engine stays off; enabling has no effect until unlocked; no synthetic fixes. |
+| 4.1.5 | Host starts updates while locked. | Original CoreLocation is used; no synthetic timer. |
+| 4.1.6 | Unlock while host is running. | Synthetic delivery resumes for the requested managers; originals stop (no duplication). |
+| 4.1.7 | Activation code submitted from the subscription screen. | Server is called; success shows Active and swaps to the map canvas; failure shows the server reason, never a fake success. |
+| 4.1.8 | Sign In / Manage Account with URLs configured. | The external page opens. |
+| 4.1.9 | Sign In / Manage Account without URLs configured. | Buttons are visibly disabled with a plain-language reason; nothing opens. |
+
+### 4.2 Signed token / tamper rejection
+
+| # | Steps | Expected |
+|---|-------|----------|
+| 4.2.1 | Serve a valid envelope signed by the configured key. | Verifies; claims applied. |
+| 4.2.2 | Tamper the payload (proxy). | Rejected; a valid cache is not revoked by an invalid response. |
+| 4.2.3 | Tamper the signature. | Rejected. |
+| 4.2.4 | Token bound to a different installation UUID. | Rejected (binding mismatch); locked. |
+| 4.2.5 | Wrong issuer/audience. | Rejected when the corresponding config is set. |
+| 4.2.6 | Oversized payload / malformed JSON / unsupported `alg`. | Rejected; fail-closed. |
+| 4.2.7 | Signed `status = revoked`. | Enters Invalid; cached token is purged; engine tears down to passthrough. |
+| 4.2.8 | Signed `status = expired`. | Enters Expired; engine locked. |
+| 4.2.9 | Inspect the Keychain and `NSUserDefaults`. | License material only in the Keychain; no token/UUID in defaults. |
+| 4.2.10 | Serve an envelope above the size cap, or a fractional/boolean `version` or timestamp. | Rejected before/without trusting content; fail-closed. |
+| 4.2.11 | Configure a malformed or arbitrary-tail public key. | Rejected as an invalid key; nothing verifies. |
+| 4.2.12 | Server returns a token whose `issuedAt` is far in the future. | Rejected beyond the allowed skew; a valid cache is not revoked. |
+| 4.2.13 | Proxy inserts an HTTP/HTTPS redirect to another host. | Redirect is not followed; the code/token is never forwarded. |
+| 4.2.14 | Response body exceeds the cap while streaming. | The task is cancelled as soon as the cap is exceeded; treated as a failed check. |
+
+### 4.3 Offline, clock and grace
+
+| # | Steps | Expected |
+|---|-------|----------|
+| 4.3.1 | Verified Active, then airplane mode, relaunch. | Active preserved from cache; no network needed. |
+| 4.3.2 | Verified Grace within the configured cap, offline. | Grace preserved (unlocked); status shows grace. |
+| 4.3.3 | Grace window larger than the configured cap. | Treated as Expired (locked). |
+| 4.3.4 | No valid cache and offline. | Offline (locked); subscription screen explains connectivity. |
+| 4.3.5 | Move the device clock backwards while Active. | The entitlement does not extend; a time cross-check keeps the deadline. |
+| 4.3.6 | Reach the expiry deadline while running. | Route/drift/streams tear down; managers fall back to real CoreLocation; host is not closed; data untouched. |
+| 4.3.7 | Foreground reconciliation after the deadline. | State re-resolved from the effective clock; a refresh runs when configured. |
+| 4.3.8 | Re-check while a valid cache exists. | A still-valid cache is not revoked merely because revalidation is in flight. |
+| 4.3.9 | Move the clock back, relaunch, with a token that expired in between. | Remains expired; the persisted metadata clock prevents extension. |
+| 4.3.10 | Receive a signed `revoked`, then go offline and relaunch. | Still Invalid (authenticated revocation preserved), never Offline. |
+| 4.3.11 | Corrupt the Keychain metadata (garbage/Null/wrong types). | Ignored safely; no crash; the license resolves conservatively. |
+| 4.3.12 | Build with no build macros and no host Info.plist keys. | Locked; the subscription screen states the service is unavailable. |
+
+### 4.4 UI / lifecycle / scenes
+
+| # | Steps | Expected |
+|---|-------|----------|
+| 4.4.1 | Open the overlay while locked. | The subscription screen appears instead of the map canvas. |
+| 4.4.2 | Entitlement expires while the map canvas is open. | The window root swaps in place to the subscription screen; no new window, no focus/scene glitch. |
+| 4.4.3 | Activate while the subscription screen is open. | Root swaps in place to the map canvas with the persisted state intact. |
+| 4.4.4 | Rotate / light-dark / Dynamic Type on both screens. | Layout reflows within the safe area; no clipping. |
+| 4.4.5 | Multi-scene: move the overlay between scenes while locked and unlocked. | The window is re-created on the active scene; root selection stays correct; no crash. |
+| 4.4.6 | Stream `os_log` through every subscription transition. | Only allow-listed events; license states are numeric; no ids, tokens or messages. |
 
 ## Pass/fail recording
 

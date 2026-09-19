@@ -26,12 +26,13 @@
 
 #import "GPSLabOverlayPresenter.h"
 
-// Press-and-hold duration (~0.9 s).
-static const NSTimeInterval kGPSLabActivationPressDuration = 0.9;
-// Conservative movement tolerance in points before the gesture cancels.
-static const CGFloat kGPSLabActivationMovementTolerance = 10.0;
-// Cooldown after the overlay opens, before another activation can fire.
-static const NSTimeInterval kGPSLabActivationCooldown = 1.0;
+// Centralized activation constants (~0.9 s press, 10 pt tolerance, ~1 s cooldown,
+// exactly three fingers). The public header declares them so they are testable and
+// pinned by the static checks.
+const NSTimeInterval kGPSLabActivationPressDuration = 0.9;
+const CGFloat kGPSLabActivationMovementTolerance = 10.0;
+const NSTimeInterval kGPSLabActivationCooldown = 1.0;
+const NSUInteger kGPSLabActivationRequiredTouches = 3;
 
 @interface GPSLabGestureActivator () <UIGestureRecognizerDelegate>
 @property (nonatomic, weak, nullable) UIWindow *installedWindow;
@@ -64,7 +65,7 @@ static const NSTimeInterval kGPSLabActivationCooldown = 1.0;
         [[UILongPressGestureRecognizer alloc] initWithTarget:self
                                                      action:@selector(handleLongPress:)];
     // Exactly three fingers; extra fingers make the recognizer fail its begin check.
-    recognizer.numberOfTouchesRequired = 3;
+    recognizer.numberOfTouchesRequired = kGPSLabActivationRequiredTouches;
     recognizer.minimumPressDuration = kGPSLabActivationPressDuration;
     recognizer.allowableMovement = kGPSLabActivationMovementTolerance;
     recognizer.cancelsTouchesInView = NO;
@@ -91,7 +92,7 @@ static const NSTimeInterval kGPSLabActivationCooldown = 1.0;
     // Only a fully-formed press may activate; Began is reached only after the
     // minimum press duration with the movement tolerance respected.
     if (recognizer.state == UIGestureRecognizerStateBegan) {
-        if (recognizer.numberOfTouches != 3) {
+        if (recognizer.numberOfTouches != kGPSLabActivationRequiredTouches) {
             // Defensive: never activate for a non-3-finger press.
             return;
         }
@@ -147,7 +148,7 @@ static const NSTimeInterval kGPSLabActivationCooldown = 1.0;
     if ([GPSLabOverlayPresenter sharedPresenter].isPresenting) {
         return NO;
     }
-    if (gestureRecognizer.numberOfTouches != 3) {
+    if (gestureRecognizer.numberOfTouches != kGPSLabActivationRequiredTouches) {
         return NO;
     }
     return YES;

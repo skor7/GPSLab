@@ -277,41 +277,59 @@ grep -q -F "removeAnnotation:self.realLocationAnnotation" "$OVERLAY" \
     || fail "the real-location annotation must be removed when display is turned off"
 pass "real location uses a bypassed manager + separate annotation, never showsUserLocation"
 
-# ---------------------------------------------------- Overlay map layout --------
-echo "== Overlay map layout =="
-# The MKMapView must be a visible arranged subview of the dedicated map section,
-# never hidden behind the panel, and must carry an explicit height so the scroll
-# content can size. The ban targets the specific old map-behind-panel placement.
+# ---------------------------------------------------- Map-first layout ----------
+echo "== Map-first layout =="
+# The MKMapView must be a direct subview of the controller root, pinned to the safe
+# area, and never embedded in a scrolling/stacked dashboard. All configuration lives
+# in separate native sheet controllers.
 if grep -n -E 'insertSubview:.*mapView.*belowSubview' "$OVERLAY" >/dev/null 2>&1; then
-    fail "overlay must not place the map behind the panel (insertSubview:mapView belowSubview:)"
+    fail "overlay must not place the map behind a panel (insertSubview:mapView belowSubview:)"
 fi
-grep -q -F -e "- (UIStackView *)buildMapSection" "$OVERLAY" \
-    || fail "overlay must build the map as a dedicated map section"
-grep -q -F "initWithArrangedSubviews:@[self.mapView," "$OVERLAY" \
-    || fail "overlay map must be the first arranged subview of the map section stack"
-grep -q -F "mapView.heightAnchor constraintEqualToConstant" "$OVERLAY" \
-    || fail "overlay map must declare an explicit height constraint"
-pass "map is a visible arranged subview with an explicit height, not behind the panel"
+grep -q -F "addSubview:self.mapView" "$OVERLAY" \
+    || fail "overlay must add the MKMapView directly to the controller view"
+grep -q -F "[self.mapView.topAnchor constraintEqualToAnchor:safeArea.topAnchor]" "$OVERLAY" \
+    || fail "overlay map must be pinned to the top safe-area edge"
+grep -q -F "[self.mapView.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor]" "$OVERLAY" \
+    || fail "overlay map must own the remaining safe area"
+if grep -n -E 'addArrangedSubview:self\.mapView|initWithArrangedSubviews:@\[self\.mapView' "$OVERLAY" >/dev/null 2>&1; then
+    fail "overlay map must not be an arranged subview of a dashboard stack"
+fi
+if grep -r -n -F "GPSLabOverlayScrollView" "$SOURCE_DIR" >/dev/null 2>&1; then
+    fail "the old scrolling dashboard container must not be reintroduced"
+fi
+pass "map owns the remaining safe area; controls float above it; no dashboard scroll container"
 
 # --------------------------------------------------------------- Search --------
 echo "== Search request hygiene =="
-grep -q -F "activeSearch" "$OVERLAY" || fail "search must track an active MKLocalSearch"
-grep -q -F "cancelActiveSearch" "$OVERLAY" || fail "search must cancel the previous request"
+SEARCH="$SOURCE_DIR/GPSLabSearchResultsViewController.m"
+[[ -f "$SEARCH" ]] || fail "GPSLabSearchResultsViewController.m missing"
+grep -q -F "MKLocalSearch" "$SEARCH" || fail "search must use MKLocalSearch"
+grep -q -F "activeSearch" "$SEARCH" || fail "search must track an active MKLocalSearch"
+grep -q -F "cancelActiveSearch" "$SEARCH" || fail "search must cancel the previous request"
+grep -q -F "searchGeneration" "$SEARCH" || fail "search must guard against stale responses"
 grep -q -F "didDismissSearchController" "$OVERLAY" || fail "search must cancel when dismissed"
-grep -q -F "searchGeneration" "$OVERLAY" || fail "search must guard against stale responses"
+grep -q -F "cancelActiveSearch" "$OVERLAY" || fail "overlay must cancel the active search on dismiss"
 pass "active search is cancelled on new/short/dismiss/dealloc and stale results are ignored"
 
 # ------------------------------------------------------------- Gesture ---------
 echo "== Gesture contract =="
 GESTURE="$SOURCE_DIR/GPSLabGestureActivator.m"
+GESTURE_H="$SOURCE_DIR/GPSLabGestureActivator.h"
 [[ -f "$GESTURE" ]] || fail "GPSLabGestureActivator.m missing"
-grep -q -F "numberOfTouchesRequired = 3" "$GESTURE" || fail "gesture must require exactly 3 fingers"
+[[ -f "$GESTURE_H" ]] || fail "GPSLabGestureActivator.h missing"
+grep -q -F "kGPSLabActivationRequiredTouches" "$GESTURE_H" || fail "gesture touch constant not declared"
+grep -q -F "kGPSLabActivationPressDuration = 0.9" "$GESTURE" || fail "press duration must be 0.9s"
+grep -q -F "kGPSLabActivationMovementTolerance = 10.0" "$GESTURE" || fail "movement tolerance must be 10pt"
+grep -q -F "kGPSLabActivationCooldown = 1.0" "$GESTURE" || fail "cooldown must be ~1s"
+grep -q -F "kGPSLabActivationRequiredTouches = 3" "$GESTURE" || fail "gesture must require exactly 3 fingers"
+grep -q -F "numberOfTouchesRequired = kGPSLabActivationRequiredTouches" "$GESTURE" \
+    || fail "gesture must use the named touch count"
 grep -q -F "minimumPressDuration = kGPSLabActivationPressDuration" "$GESTURE" \
     || fail "gesture must use the named press duration"
-grep -q -F "kGPSLabActivationPressDuration = 0.9" "$GESTURE" || fail "press duration must be 0.9s"
+grep -q -F "allowableMovement = kGPSLabActivationMovementTolerance" "$GESTURE" \
+    || fail "gesture must use the named movement tolerance"
 grep -q -F "cancelsTouchesInView = NO" "$GESTURE" || fail "gesture must not cancel host touches"
 grep -q -F "kGPSLabActivationCooldown" "$GESTURE" || fail "gesture cooldown missing"
-grep -q -F "allowableMovement" "$GESTURE" || fail "gesture movement threshold missing"
 pass "gesture requires 3 fingers / 0.9s / movement cancel / cooldown / no host interference"
 
 # --------------------------------------------------------- Persistence ---------
@@ -349,5 +367,79 @@ while IFS= read -r entry; do
     [[ -f "$ROOT/$entry" ]] || fail "Makefile lists a missing source file: $entry"
 done < <(grep -oE 'Source/[A-Za-z0-9_]+\.m' "$MAKEFILE")
 pass "no dead passthrough view; every Makefile source exists"
+
+# ------------------------------------------------------------- Licenses --------
+echo "== License / entitlement invariants =="
+for file in GPSLabLicensePolicy.h GPSLabLicenseConfig.m GPSLabSecureStore.m \
+    GPSLabTokenVerifier.m GPSLabEntitlement.m GPSLabLicenseManager.m \
+    GPSLabSubscriptionViewController.m; do
+    [[ -f "$SOURCE_DIR/$file" ]] || fail "license source missing: Source/$file"
+done
+pass "required license classes are present"
+
+POLICY="$SOURCE_DIR/GPSLabLicensePolicy.h"
+for state in Unknown Checking Active Grace Expired Invalid Offline; do
+    grep -q -F "GPSLabEntitlementState$state" "$POLICY" || fail "policy state missing: $state"
+done
+pass "entitlement states are exact and complete"
+
+# Token/entitlement material must live in the Keychain, never in NSUserDefaults.
+if grep -r -n -F "NSUserDefaults" "$SOURCE_DIR/GPSLabSecureStore.m" \
+        "$SOURCE_DIR/GPSLabTokenVerifier.m" "$SOURCE_DIR/GPSLabLicenseManager.m" \
+        "$SOURCE_DIR/GPSLabEntitlement.m" "$SOURCE_DIR/GPSLabLicenseConfig.m" >/dev/null 2>&1; then
+    fail "license material must use the Keychain, never NSUserDefaults"
+fi
+grep -q -F "SecItemAdd" "$SOURCE_DIR/GPSLabSecureStore.m" || fail "secure store must write the Keychain"
+grep -q -F "SecItemCopyMatching" "$SOURCE_DIR/GPSLabSecureStore.m" || fail "secure store must read the Keychain"
+pass "license material is Keychain-only"
+
+# No embedded signing secret or backdoor.
+if grep -r -n -i -E 'BEGIN ([A-Z ]*)?PRIVATE KEY|PRIVATE_KEY|allowAll|bypassLicense|debugUnlock|masterKey' \
+        "$SOURCE_DIR" >/dev/null 2>&1; then
+    fail "no embedded signing secret or license backdoor is allowed"
+fi
+pass "no embedded signing secret or backdoor"
+
+grep -q -F "SecKeyVerifySignature" "$SOURCE_DIR/GPSLabTokenVerifier.m" \
+    || fail "token verifier must verify a signature"
+grep -q -F "kSecKeyAlgorithmECDSASignatureMessageX962SHA256" "$SOURCE_DIR/GPSLabTokenVerifier.m" \
+    || fail "token verifier must use ECDSA P-256 SHA-256"
+pass "signed-token verification present"
+
+grep -q -F "endpoint != nil && self.publicKey.length > 0" "$SOURCE_DIR/GPSLabLicenseConfig.m" \
+    || fail "config must fail closed when endpoint/key are missing"
+grep -q -F "_configuration.enabled && _entitlementAllowsSynthesis" "$SOURCE_DIR/GPSLabEngine.m" \
+    || fail "engine enabled state must be gated by the entitlement"
+grep -q -F "setEntitlementAllowsSynthesis" "$SOURCE_DIR/GPSLabLicenseManager.m" \
+    || fail "license manager must apply the engine gate"
+pass "engine is fail-closed behind the entitlement gate"
+
+MANAGER="$SOURCE_DIR/GPSLabLicenseManager.m"
+VERIFIER="$SOURCE_DIR/GPSLabTokenVerifier.m"
+grep -q -F 'dispatch_queue_create("com.gpslab.runtime.license"' "$MANAGER" \
+    || fail "license work must run on a dedicated serial queue"
+grep -q -F "NSAssert([NSThread isMainThread]" "$MANAGER" \
+    || fail "license state must be applied on the main thread only"
+grep -q -F "willPerformHTTPRedirection" "$MANAGER" || fail "redirects must be rejected explicitly"
+grep -q -F "completionHandler(nil)" "$MANAGER" || fail "redirects must not be followed"
+grep -q -F "didReceiveData" "$MANAGER" || fail "responses must be length-bounded while streaming"
+grep -q -F "envelopeData.length > envelopeCap" "$VERIFIER" \
+    || fail "envelope size must be checked before parsing"
+if grep -q -F "dataTaskWithRequest:request completionHandler:" "$MANAGER" >/dev/null 2>&1; then
+    fail "unbounded completion-handler buffering is not allowed"
+fi
+[[ -f "$SOURCE_DIR/GPSLabLicenseBuildConfig.h" ]] || fail "independent build config header missing"
+pass "license hardening invariants present"
+
+if grep -r -n -E 'GPSLabDiagSpoofActive|GPSLabDiagGeneratedLocation|GPSLabDiagManagerRegistered|GPSLabDiagManagerUnregistered' \
+        "$SOURCE_DIR" >/dev/null 2>&1; then
+    fail "diagnostics must only use the strict allow-listed events"
+fi
+pass "diagnostics use only the strict allow-listed events"
+
+for testfile in tests/license_policy_test.c tests/GPSLabLicenseTests.m; do
+    [[ -f "$ROOT/$testfile" ]] || fail "test missing: $testfile"
+done
+pass "license tests are present"
 
 echo "All GPSLab static checks passed."

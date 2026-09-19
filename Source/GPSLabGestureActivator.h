@@ -12,6 +12,14 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+// Centralized activation constants. Exactly this many fingers, held continuously for
+// this long, within this movement tolerance; a short cooldown prevents retriggering.
+// scripts/validate.sh pins these values.
+FOUNDATION_EXPORT const NSTimeInterval kGPSLabActivationPressDuration;   // 0.9 s
+FOUNDATION_EXPORT const CGFloat kGPSLabActivationMovementTolerance;      // 10 pt
+FOUNDATION_EXPORT const NSTimeInterval kGPSLabActivationCooldown;        // 1.0 s
+FOUNDATION_EXPORT const NSUInteger kGPSLabActivationRequiredTouches;     // 3
+
 @interface GPSLabGestureActivator : NSObject
 
 + (instancetype)sharedActivator;

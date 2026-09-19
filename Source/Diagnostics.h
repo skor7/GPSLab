@@ -2,11 +2,13 @@
 //  Diagnostics.h
 //  GPSLab
 //
-//  os_log-only diagnostics for the events the specification allows:
-//  dylib load, hook installation, overlay open/close, engine enable/disable,
-//  route start/stop, manager registration and internal errors.
+//  os_log-only diagnostics with a STRICT allow-list. Allowed events:
+//    dylib loaded, hooks installed, overlay opened/closed, engine enabled/disabled,
+//    route started/stopped, license check started / license state changed, and an
+//    internal error by stable numeric code only.
 //
-//  Coordinates, host application data and real device location are NEVER logged.
+//  Never logged: coordinates, search queries, tokens, entitlement/installation ids,
+//  account data, URLs, NSError.localizedDescription or any host data.
 //
 
 #import <Foundation/Foundation.h>
@@ -19,18 +21,8 @@ void GPSLabDiagDylibLoaded(void);
 /** Logs how many CoreLocation selectors were intercepted. */
 void GPSLabDiagHooksInstalled(int hookCount);
 
-/** Logs that a manager started or stopped being tracked. No pointer is logged. */
-void GPSLabDiagManagerRegistered(void);
-void GPSLabDiagManagerUnregistered(void);
-
-/** Logs that the synthetic engine became active (no anchor values are logged). */
-void GPSLabDiagSpoofActive(void);
-
 /** Logs the engine enable/disable transition (no coordinates). */
 void GPSLabDiagEngineEnabled(BOOL enabled);
-
-/** Logs that a synthetic location was generated (never its values). */
-void GPSLabDiagGeneratedLocation(void);
 
 /** Logs the overlay presenter lifecycle. */
 void GPSLabDiagOverlayOpened(void);
@@ -39,6 +31,12 @@ void GPSLabDiagOverlayClosed(void);
 /** Logs route simulation start/stop. No route geometry is logged. */
 void GPSLabDiagRouteStarted(void);
 void GPSLabDiagRouteStopped(void);
+
+/** Logs that a subscription check started. No payload or identifiers are logged. */
+void GPSLabDiagLicenseCheckStarted(void);
+
+/** Logs a license state change by numeric code only (never ids or messages). */
+void GPSLabDiagLicenseStateChanged(NSInteger stateCode);
 
 /** Logs an internal error by stable numeric code only (no dynamic text). */
 void GPSLabDiagInternalError(NSInteger code);

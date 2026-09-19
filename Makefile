@@ -21,14 +21,29 @@ GPSLab_FILES = \
 	Source/CoreLocationHooks.m \
 	Source/Diagnostics.m \
 	Source/GPSLabStatusLog.m \
+	Source/GPSLabLicenseConfig.m \
+	Source/GPSLabSecureStore.m \
+	Source/GPSLabTokenVerifier.m \
+	Source/GPSLabEntitlement.m \
+	Source/GPSLabLicenseManager.m \
+	Source/GPSLabSubscriptionViewController.m \
+	Source/GPSLabSheetViewController.m \
+	Source/GPSLabSearchResultsViewController.m \
+	Source/GPSLabManualEntryViewController.m \
+	Source/GPSLabFluctuationViewController.m \
+	Source/GPSLabFavoritesViewController.m \
+	Source/GPSLabRecentsViewController.m \
+	Source/GPSLabRouteViewController.m \
+	Source/GPSLabOptionsViewController.m \
 	Source/GPSLabOverlayViewController.m \
 	Source/GPSLabOverlayPresenter.m \
+	Source/GPSLabPrimaryInterface.m \
 	Source/GPSLabGestureActivator.m \
 	Source/GPSLabRuntime.m \
 	Source/dylib_init.m
 
 GPSLab_CFLAGS = -fobjc-arc -Wall -Wextra
-GPSLab_FRAMEWORKS = Foundation CoreLocation UIKit MapKit
+GPSLab_FRAMEWORKS = Foundation CoreLocation UIKit MapKit Security
 
 # Canonical Theos way to set the dylib install name. The library template expands
 # `TARGET_LDFLAGS_DYNAMICLIB` as `-dynamiclib -install_name "$(LOCAL_INSTALL_PATH)/$(1)"`

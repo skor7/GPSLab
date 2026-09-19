@@ -31,6 +31,7 @@ static const double kGPSLabMaxStepMeters = 1.5;
     GPSLabDriftModel *_drift;
     GPSLabRouteSimulator *_routeSimulator;
     BOOL _lastKnownKeepLast;
+    BOOL _entitlementAllowsSynthesis;
 }
 
 + (instancetype)sharedEngine {
@@ -108,7 +109,7 @@ static const double kGPSLabMaxStepMeters = 1.5;
 
 - (BOOL)isEnabled {
     os_unfair_lock_lock(&_lock);
-    BOOL enabled = _configuration.enabled;
+    BOOL enabled = _configuration.enabled && _entitlementAllowsSynthesis;
     os_unfair_lock_unlock(&_lock);
     return enabled;
 }
@@ -119,49 +120,90 @@ static const double kGPSLabMaxStepMeters = 1.5;
     os_unfair_lock_unlock(&_lock);
 }
 
+- (BOOL)isEntitlementAllowsSynthesis {
+    os_unfair_lock_lock(&_lock);
+    BOOL allows = _entitlementAllowsSynthesis;
+    os_unfair_lock_unlock(&_lock);
+    return allows;
+}
+
+// Applies the entitlement gate. Granting resumes synthetic delivery only when the
+// user's persisted preference is enabled; revoking tears every synthetic stream down
+// and hands the requested managers back to real CoreLocation, without closing the
+// host app or touching host data.
+- (void)setEntitlementAllowsSynthesis:(BOOL)allows {
+    os_unfair_lock_lock(&_lock);
+    BOOL wasAllowed = _entitlementAllowsSynthesis;
+    _entitlementAllowsSynthesis = allows;
+    BOOL wanted = _configuration.enabled;
+    os_unfair_lock_unlock(&_lock);
+
+    if (wasAllowed == allows) {
+        return;
+    }
+
+    [[NSNotificationCenter defaultCenter] postNotificationName:GPSLabEngineStateDidChangeNotification
+                                                        object:self];
+
+    if (allows) {
+        if (wanted) {
+            [self performEnableTransition];
+        }
+    } else {
+        [self performDisableTransition];
+    }
+}
+
 - (void)setEnabledAndNotify:(BOOL)enabled {
     os_unfair_lock_lock(&_lock);
     BOOL changed = (_configuration.enabled != enabled);
     _configuration.enabled = enabled;
+    BOOL allows = _entitlementAllowsSynthesis;
     os_unfair_lock_unlock(&_lock);
 
     if (!changed) {
         return;
     }
     GPSLabDiagEngineEnabled(enabled);
-    if (enabled) {
-        GPSLabDiagSpoofActive();
-    }
 
     [[NSNotificationCenter defaultCenter] postNotificationName:GPSLabEngineStateDidChangeNotification
                                                         object:self];
 
-    if (!enabled) {
-        // Suspend synthetic delivery but remember what each manager requested, then
-        // hand each requested stream back to real CoreLocation (exactly the kinds the
-        // host asked for) so the host degrades cleanly.
-        [[GPSLabLocationStream sharedStream] suspendAllSyntheticPreservingIntent];
-        for (CLLocationManager *manager in [[GPSLabLocationStream sharedStream] standardRequestedManagers]) {
-            [GPSLabCoreLocationHooks forwardSelector:@selector(startUpdatingLocation) onManager:manager];
-        }
-        for (CLLocationManager *manager in [[GPSLabLocationStream sharedStream] significantRequestedManagers]) {
-            [GPSLabCoreLocationHooks forwardSelector:@selector(startMonitoringSignificantLocationChanges)
-                                           onManager:manager];
-        }
-        [self stopRoute];
+    if (enabled && allows) {
+        [self performEnableTransition];
     } else {
-        // Stop the original streams for managers we had delegated, then resume synthetic.
-        // Stopping both kinds for those managers is safe (a stop of a non-started stream
-        // is a no-op); it prevents a real + synthetic stream from running together.
-        NSArray<CLLocationManager *> *requested = [[GPSLabLocationStream sharedStream] requestedManagers];
-        for (CLLocationManager *manager in requested) {
-            [GPSLabCoreLocationHooks forwardSelector:@selector(stopUpdatingLocation) onManager:manager];
-            [GPSLabCoreLocationHooks forwardSelector:@selector(stopMonitoringSignificantLocationChanges)
-                                           onManager:manager];
-        }
-        [[GPSLabLocationStream sharedStream] resumeAllRequestedSynthetic];
+        // Locked or explicitly disabled: ensure no synthetic delivery, keep intent, and
+        // hand requested streams back to real CoreLocation.
+        [self performDisableTransition];
     }
     [self persistConfiguration];
+}
+
+// Suspend synthetic delivery but remember what each manager requested, then hand each
+// requested stream back to real CoreLocation (exactly the kinds the host asked for).
+- (void)performDisableTransition {
+    [[GPSLabLocationStream sharedStream] suspendAllSyntheticPreservingIntent];
+    for (CLLocationManager *manager in [[GPSLabLocationStream sharedStream] standardRequestedManagers]) {
+        [GPSLabCoreLocationHooks forwardSelector:@selector(startUpdatingLocation) onManager:manager];
+    }
+    for (CLLocationManager *manager in [[GPSLabLocationStream sharedStream] significantRequestedManagers]) {
+        [GPSLabCoreLocationHooks forwardSelector:@selector(startMonitoringSignificantLocationChanges)
+                                       onManager:manager];
+    }
+    [self stopRoute];
+}
+
+// Stop the original streams for managers we had delegated, then resume synthetic.
+// Stopping both kinds for those managers is safe (a stop of a non-started stream is a
+// no-op); it prevents a real + synthetic stream from running together.
+- (void)performEnableTransition {
+    NSArray<CLLocationManager *> *requested = [[GPSLabLocationStream sharedStream] requestedManagers];
+    for (CLLocationManager *manager in requested) {
+        [GPSLabCoreLocationHooks forwardSelector:@selector(stopUpdatingLocation) onManager:manager];
+        [GPSLabCoreLocationHooks forwardSelector:@selector(stopMonitoringSignificantLocationChanges)
+                                       onManager:manager];
+    }
+    [[GPSLabLocationStream sharedStream] resumeAllRequestedSynthetic];
 }
 
 #pragma mark - Anchor configuration
@@ -248,6 +290,11 @@ static const double kGPSLabMaxStepMeters = 1.5;
                   mode:(GPSLabRouteMode)mode
         customSpeedKmh:(double)customSpeedKmh
             completion:(nullable GPSLabRouteCompletion)completion {
+    // Fail-closed: a route can never start while the entitlement gate is locked, even
+    // if a caller reaches this entrypoint directly.
+    if (![self isEnabled]) {
+        return;
+    }
     GPSLabRouteCompletion completionCopy = completion != nil ? [completion copy] : nil;
 
     os_unfair_lock_lock(&_lock);
@@ -336,6 +383,10 @@ static const double kGPSLabMaxStepMeters = 1.5;
 }
 
 - (CLLocation *)locationAdvancing:(BOOL)advance {
+    // Fail-closed: no synthetic location is ever produced while locked.
+    if (![self isEnabled]) {
+        return nil;
+    }
     BOOL onRoute = [_routeSimulator isActive];
     if (onRoute) {
         return [self routeLocationAdvancing:advance];
@@ -397,7 +448,6 @@ static const double kGPSLabMaxStepMeters = 1.5;
 }
 
 - (void)didProduceLocation:(CLLocation *)location {
-    GPSLabDiagGeneratedLocation();
     [[NSNotificationCenter defaultCenter] postNotificationName:GPSLabLocationDidUpdateNotification
                                                         object:self
                                                       userInfo:@{@"location": location}];
