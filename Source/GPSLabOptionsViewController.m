@@ -15,6 +15,7 @@
 @interface GPSLabOptionsViewController ()
 @property (nonatomic, strong) UISwitch *keepLastSwitch;
 @property (nonatomic, strong) UISwitch *realLocationSwitch;
+@property (nonatomic, strong) UISwitch *engineSwitch;
 @property (nonatomic, strong) UISegmentedControl *mapStyleControl;
 @property (nonatomic, strong) UISegmentedControl *languageControl;
 
@@ -52,6 +53,12 @@
                                 action:@selector(realLocationChanged)
                       forControlEvents:UIControlEventValueChanged];
 
+    self.engineSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
+    self.engineSwitch.on = self.engineEnabled;
+    [self.engineSwitch addTarget:self
+                          action:@selector(engineChanged)
+                forControlEvents:UIControlEventValueChanged];
+
     self.mapStyleControl = [[UISegmentedControl alloc] initWithItems:@[@"", @"", @""]];
     self.mapStyleControl.selectedSegmentIndex = self.mapStyle;
     [self.mapStyleControl addTarget:self
@@ -78,6 +85,8 @@
     [content addArrangedSubview:self.recentsButton];
     [content addArrangedSubview:self.fluctuationButton];
     [content addArrangedSubview:self.preferencesHeader];
+    [content addArrangedSubview:[self gpslab_rowWithLabel:[self bodyLabel:GPSLabLocalized(@"overlay.enabled")]
+                                                  control:self.engineSwitch]];
     [content addArrangedSubview:[self gpslab_rowWithLabel:self.keepLastLabel control:self.keepLastSwitch]];
     [content addArrangedSubview:[self gpslab_rowWithLabel:self.realLocationLabel
                                                   control:self.realLocationSwitch]];
@@ -121,6 +130,8 @@
     self.realLocationLabel.text = GPSLabLocalized(@"options.realLocation");
     self.keepLastSwitch.accessibilityLabel = GPSLabLocalized(@"options.keepLast");
     self.realLocationSwitch.accessibilityLabel = GPSLabLocalized(@"options.realLocation");
+    self.engineSwitch.accessibilityLabel = GPSLabLocalized(@"overlay.enabled");
+    self.engineSwitch.on = self.engineEnabled;
 
     if (self.mapStyleControl.numberOfSegments >= 3) {
         [self.mapStyleControl setTitle:GPSLabLocalized(@"map.style.standard") forSegmentAtIndex:0];
@@ -171,6 +182,12 @@
 - (void)realLocationChanged {
     if (self.realLocationHandler != nil) {
         self.realLocationHandler(self.realLocationSwitch.on);
+    }
+}
+
+- (void)engineChanged {
+    if (self.engineEnabledHandler != nil) {
+        self.engineEnabledHandler(self.engineSwitch.on);
     }
 }
 

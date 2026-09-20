@@ -308,6 +308,72 @@ and extended for the fixed geometry. All of them remain **device-manual**.
 | 5.41 | Rapidly tap Search, type, Cancel, then Search again, then type. | A late query/textDidEnd callback after Cancel never resurrects the session; the new session drives fresh results with a clean generation. |
 | 5.42 | Note the search field's top and height on a long screen with no query, then focus it, type a ≥3-char query with many results, and Cancel. | The field keeps the SAME top and height in every state (inactive/active/empty/many/Cancel); only the results panel below it changes height, so no giant blank bar/panel ever appears. |
 
+## 6. Reference UI rebuild matrix (v4) — PENDING, device-only
+
+These rows cover the approved `UI_REFERENCE_FINAL.html` rebuild. CI proves the
+schema/store/schedule/module contracts and the static layout invariants only;
+**every row below is device-manual and must be recorded as pending until run on
+hardware.** Compare side by side with `UI_REFERENCE_FINAL.html` (SHA
+`85C73D41…F10EC7`, unchanged).
+
+### 6.1 Visual reference compare (portrait + landscape, RTL)
+
+| # | Steps | Expected |
+|---|-------|----------|
+| 6.1.1 | Open the overlay in Arabic, portrait. | One compact dark/violet panel (28pt radius) floats over a dimmed map; header order is EN pill, info, GPSLab title + subtitle, live indicator, close. |
+| 6.1.2 | Rotate to landscape and back. | Header and search stay pinned; only the body scrolls; nothing clips; the panel respects the safe area. |
+| 6.1.3 | Inspect the map card. | A real, interactive MapKit map fills a 278pt card with a 24pt radius; pan/zoom/drag-pin work; a debounced snapshot backs the panel background. |
+| 6.1.4 | Inspect the search row. | A standalone 62pt search row with a blue cursor; typing shows a bounded results panel below it that never covers the field; Cancel is persistent. |
+| 6.1.5 | Inspect the control card. | Two 2-column segments (Map/Favorites, Static/Route), selected coordinates, 3-cell grid (lat/lon/alt), heading line, three switches, schedule row. |
+| 6.1.6 | Switch to English. | Immediate LTR English; coordinates/heading stay LTR/Latin; the map is never mirrored; the choice persists across relaunch. |
+| 6.1.7 | Rotate with the keyboard up and a live search. | The results panel stays above the keyboard; the field keeps the same top/height; no blank panel. |
+| 6.1.8 | Open the profile/simulation/schedule/manual form, focus a numeric field. | The keyboard rises and the form viewport shrinks above it; Save/Apply can be scrolled into view with no clipping, in both languages and both orientations. |
+| 6.1.9 | View the header on a 360/375pt iPhone in Arabic and English. | The `GPSLab` title stays on one line (shrunk to fit, never truncated); the header row height and the `EN` pill/44pt tap targets are unchanged. |
+
+### 6.2 Tabs, favorites, route
+
+| # | Steps | Expected |
+|---|-------|----------|
+| 6.2.1 | Map/Favorites segment → Favorites. | The map card is replaced by the favorites list; selecting a favorite applies its coordinate; bookmark (♡) saves the current anchor. |
+| 6.2.2 | Static/Route segment → Route. | Route controls appear: start/end pickers, mode, custom speed slider, play/pause/stop, on-stop behavior. |
+| 6.2.3 | Set start and end on the map, start a route. | The route plays through the existing engine; progress/status update; pause/resume/stop work. |
+| 6.2.4 | Info (ⓘ). | The existing options sheet opens with manual, recents, fluctuation, keep-last, real location, map style, language and a clear enable switch. |
+
+### 6.3 Profiles CRUD + persistence
+
+| # | Steps | Expected |
+|---|-------|----------|
+| 6.3.1 | Add a profile (name + static anchor + drift), save. | A chip appears and is selected; the summary shows static/drift; no fake data is prepopulated (placeholders/suggestions only). |
+| 6.3.2 | Edit a profile, then delete it. | Changes persist; delete removes the chip; the selected id never dangles. |
+| 6.3.3 | One-click Apply on a static profile. | The anchor/drift load together; the UI is consistent; no half-applied state. |
+| 6.3.4 | One-click Apply on a route profile. | The old route is cleared, the new route starts asynchronously; changing selection/Disabling/locking stops the stale route. |
+| 6.3.5 | Apply while the engine is disabled, or while locked. | A localized message ("enable simulation first" / "subscription not active"); nothing is applied and the engine is never enabled. |
+| 6.3.6 | Relaunch after creating profiles. | Profiles, selection and attachments persist (Application Support/GPSLab/Profiles). |
+| 6.3.7 | Corrupt `profiles.json` (garbage / wrong schema). | The file is quarantined; the store loads empty; no crash; other GPSLab state is untouched. |
+| 6.3.8 | Toggle a Wi-Fi/Bluetooth/schedule attachment off and save. | The stale attachment is removed from the profile (no leftover active config). |
+
+### 6.4 Simulation / test modules
+
+| # | Steps | Expected |
+|---|-------|----------|
+| 6.4.1 | Open Wi-Fi test settings. | Native fields (profile name, SSID, signal); an explicit "test settings only" note; saving normalizes and stores only synthetic strings. |
+| 6.4.2 | Open Bluetooth test settings. | Native fields (profile name, device name, RSSI, pattern); no hardware/scan/pairing occurs. |
+| 6.4.3 | Enter invalid signal/RSSI or blank required fields. | Localized validation; nothing is saved. |
+| 6.4.4 | Inspect behaviour on a stock device. | No real network/device identity is changed; an unsupported capability would return a typed Unsupported result, not a fake success. |
+
+### 6.5 Schedule + end-to-end
+
+| # | Steps | Expected |
+|---|-------|----------|
+| 6.5.1 | Attach a once schedule ~1 minute ahead, apply the profile. | At the due time (app foreground) the profile applies once; the tag shows the time. |
+| 6.5.2 | Background the app past the due time, then foreground it. | If the window is over it is skipped; if still inside it applies exactly once. |
+| 6.5.3 | Manually Disable GPSLab with a schedule pending. | The schedule is cancelled and never re-enables GPSLab. |
+| 6.5.4 | Attach a window schedule, apply, let the window end. | GPSLab stops its own scheduled profile (route stop + disable) only while it still owns the selection; a manually chosen profile is untouched. |
+| 6.5.5 | Delete/change the profile with a pending schedule. | Pending timers/route completions are invalidated; no duplicate schedule. |
+| 6.5.6 | Full pass: search → route → profile apply → schedule → license expiry. | Search, route, profiles, modules and schedule behave as above; on expiry the canvas tears down and the host is unaffected. |
+
+
+
 ## Pass/fail recording
 
 Record, per row: device model, iOS version, IPA variant ([Clean]/[Re-tested]),

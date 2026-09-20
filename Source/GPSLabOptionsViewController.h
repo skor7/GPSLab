@@ -21,6 +21,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapStyle) {
 
 @property (nonatomic, assign) BOOL keepLastCoordinate;
 @property (nonatomic, assign) BOOL realLocationEnabled;
+@property (nonatomic, assign) BOOL engineEnabled;
 @property (nonatomic, assign) NSInteger mapStyle;
 
 /** Non-empty only when a status should be surfaced in settings (e.g. Grace). */
@@ -28,6 +29,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapStyle) {
 
 @property (nonatomic, copy, nullable) void (^keepLastHandler)(BOOL keepLast);
 @property (nonatomic, copy, nullable) void (^realLocationHandler)(BOOL enabled);
+@property (nonatomic, copy, nullable) void (^engineEnabledHandler)(BOOL enabled);
 @property (nonatomic, copy, nullable) void (^mapStyleHandler)(NSInteger style);
 
 @property (nonatomic, copy, nullable) void (^manualEntryHandler)(void);

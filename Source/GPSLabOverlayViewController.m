@@ -2,18 +2,27 @@
 //  GPSLabOverlayViewController.m
 //  GPSLab
 //
-//  Map-first canvas. The MKMapView owns the remaining safe area (it is not inside a
-//  scrolling panel); the header, floating controls and pick banner float above it.
-//  All configuration lives in small, native sheets presented by this controller.
+//  Reference rebuild: ONE compact floating panel over a lightweight map snapshot
+//  background. Inside the panel: a pinned header, a pinned standalone search bar
+//  (fixed height) with a bounded GPSLab-owned results child, and a scrolling body
+//  that starts with a real, interactive 278pt MKMapView card, followed by the
+//  control card, profiles, simulation/test modules, actions and the compact
+//  subscription footer.
 //
-//  The synthetic engine, hook layer, drift model, route simulator and persistence
-//  allow-list are unchanged; this controller only drives them.
+//  The synthetic engine, hook layer, drift model, route simulator, modal policy,
+//  search-bar policy, presenter/key-lease and license gate are unchanged; this
+//  controller only drives them through their existing public APIs.
 //
 
 #import "GPSLabOverlayViewController.h"
 
 #import <CoreLocation/CoreLocation.h>
 #import <MapKit/MapKit.h>
+
+// UIButton.contentEdgeInsets is deprecated under UIButtonConfiguration (iOS 15)
+// but remains the supported API for the plain, configuration-less buttons used
+// here. The deprecation is suppressed narrowly for this file.
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
 #import "CoreLocationHooks.h"
 #import "GPSLabEngine.h"
@@ -26,13 +35,22 @@
 #import "GPSLabModalCoordinator.h"
 #import "GPSLabOptionsViewController.h"
 #import "GPSLabOverlayPresenter.h"
+#import "GPSLabProfile.h"
+#import "GPSLabProfileApplicationCoordinator.h"
+#import "GPSLabProfileFormViewController.h"
+#import "GPSLabProfileStore.h"
+#import "GPSLabProfilesPanelView.h"
 #import "GPSLabRecentsViewController.h"
-#import "GPSLabRouteViewController.h"
+#import "GPSLabScheduler.h"
+#import "GPSLabScheduleViewController.h"
 #import "GPSLabSearchLayoutCore.h"
 #import "GPSLabSearchResultsViewController.h"
+#import "GPSLabSecureStore.h"
 #import "GPSLabSheetViewController.h"
+#import "GPSLabSimulationSettingsViewController.h"
 #import "GPSLabStatusLog.h"
 #import "GPSLabStore.h"
+#import "GPSLabTheme.h"
 #import "GPSLabTypes.h"
 
 #pragma mark - Annotation
@@ -45,7 +63,48 @@
 @implementation GPSLabSyntheticAnnotation
 @end
 
-#pragma mark - Pick mode
+#pragma mark - Heading view
+
+@interface GPSLabHeadingView : UIView
+@property (nonatomic, assign) double heading;
+@end
+
+@implementation GPSLabHeadingView {
+    UIView *_line;
+    UIView *_knob;
+}
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        _line = [[UIView alloc] initWithFrame:CGRectZero];
+        _line.backgroundColor = GPSLabThemeBorderColor();
+        [self addSubview:_line];
+        _knob = [[UIView alloc] initWithFrame:CGRectZero];
+        _knob.backgroundColor = UIColor.whiteColor;
+        _knob.layer.cornerRadius = 14.0;
+        [self addSubview:_knob];
+    }
+    return self;
+}
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGFloat midY = CGRectGetMidY(self.bounds);
+    _line.frame = CGRectMake(0.0, midY - 1.0, CGRectGetWidth(self.bounds), 2.0);
+    double normalized = fmod(self.heading < 0.0 ? 0.0 : self.heading, 360.0) / 360.0;
+    CGFloat x = (CGFloat)normalized * CGRectGetWidth(self.bounds);
+    _knob.frame = CGRectMake(x - 14.0, midY - 14.0, 28.0, 28.0);
+}
+
+- (void)setHeading:(double)heading {
+    _heading = heading;
+    [self setNeedsLayout];
+}
+
+@end
+
+#pragma mark - Overlay controller
 
 typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     GPSLabMapPickModeNone = 0,
@@ -53,32 +112,84 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     GPSLabMapPickModeRouteEnd,
 };
 
-#pragma mark - Overlay controller
-
 @interface GPSLabOverlayViewController () <MKMapViewDelegate, CLLocationManagerDelegate,
                                             UISearchBarDelegate, UIGestureRecognizerDelegate> {
-    // Pure C search-session lifecycle (see GPSLabSearchLayoutCore.h).
     GPSLabSearchSession _searchSession;
 }
 
-@property (nonatomic, strong) MKMapView *mapView;
+// Panel chrome
+@property (nonatomic, strong) UIImageView *backgroundImageView;
+@property (nonatomic, strong) UIView *panelView;
+@property (nonatomic, strong) UIView *headerView;
+@property (nonatomic, strong) UIButton *languageButton;
+@property (nonatomic, strong) UIButton *infoButton;
+@property (nonatomic, strong) UILabel *headerTitleLabel;
+@property (nonatomic, strong) UILabel *headerSubtitleLabel;
+@property (nonatomic, strong) UIButton *masterButton;
+@property (nonatomic, strong) UIView *masterDot;
+@property (nonatomic, strong) UIButton *closeButton;
 
-@property (nonatomic, strong) UIVisualEffectView *headerView;
-@property (nonatomic, strong) UILabel *statusLabel;
-@property (nonatomic, strong) UILabel *titleLabel;
-@property (nonatomic, strong) UILabel *enabledLabel;
-@property (nonatomic, strong) UISwitch *enabledSwitch;
-@property (nonatomic, strong) UIButton *headerSettingsButton;
-@property (nonatomic, strong) UIButton *headerCloseButton;
-@property (nonatomic, strong) NSArray<UIButton *> *controlButtons;
-@property (nonatomic, strong) UIVisualEffectView *searchBarContainer;
-@property (nonatomic, strong) UIStackView *controlsStack;
+// Search
+@property (nonatomic, strong) UIView *searchBarContainer;
+@property (nonatomic, strong, nullable) UISearchBar *searchBar;
+@property (nonatomic, strong, nullable) GPSLabSearchResultsViewController *searchResultsController;
+@property (nonatomic, strong, nullable) NSLayoutConstraint *resultHeightConstraint;
+@property (nonatomic, strong) UIScrollView *bodyScrollView;
+@property (nonatomic, strong) UIStackView *bodyStack;
 @property (nonatomic, strong, nullable) UITapGestureRecognizer *outsideTapRecognizer;
+@property (nonatomic, strong, nullable) NSLayoutConstraint *panelLeadingConstraint;
+@property (nonatomic, strong, nullable) NSLayoutConstraint *panelTrailingConstraint;
 
-@property (nonatomic, strong) UIVisualEffectView *pickBanner;
+// Map card
+@property (nonatomic, strong) UIView *mapCard;
+@property (nonatomic, strong) MKMapView *mapView;
+@property (nonatomic, strong) UIButton *bookmarkButton;
+@property (nonatomic, strong) UIButton *centerButton;
 @property (nonatomic, strong) UILabel *pickBannerLabel;
-@property (nonatomic, strong) UIButton *pickCancelButton;
 
+// Map / favorites tab
+@property (nonatomic, strong) UISegmentedControl *mapFavoritesSegment;
+@property (nonatomic, strong) UIStackView *favoritesList;
+@property (nonatomic, strong) UIView *favoritesCard;
+
+// Control card
+@property (nonatomic, strong) UIView *controlCard;
+@property (nonatomic, strong) UISegmentedControl *staticRouteSegment;
+@property (nonatomic, strong) UILabel *coordsTitleLabel;
+@property (nonatomic, strong) UILabel *coordsBigLabel;
+@property (nonatomic, strong) NSArray<UILabel *> *coordValueLabels;
+@property (nonatomic, strong) GPSLabHeadingView *headingView;
+@property (nonatomic, strong) UILabel *headingValueLabel;
+@property (nonatomic, strong) UISwitch *driftSwitch;
+@property (nonatomic, strong) UISwitch *keepLastSwitch;
+@property (nonatomic, strong) UISwitch *realLocationSwitch;
+@property (nonatomic, strong) UIButton *scheduleButton;
+
+// Route section
+@property (nonatomic, strong) UIStackView *routeSection;
+@property (nonatomic, strong) UILabel *routeStartLabel;
+@property (nonatomic, strong) UILabel *routeEndLabel;
+@property (nonatomic, strong) UISegmentedControl *routeModeSegment;
+@property (nonatomic, strong) UISlider *routeSpeedSlider;
+@property (nonatomic, strong) UILabel *routeSpeedValueLabel;
+@property (nonatomic, strong) UIButton *routePlayButton;
+@property (nonatomic, strong) UIButton *routeStopButton;
+@property (nonatomic, strong) UISegmentedControl *routeStopBehaviorSegment;
+
+// Profiles + modules + actions + subscription
+@property (nonatomic, strong) GPSLabProfilesPanelView *profilesPanel;
+@property (nonatomic, strong) UIButton *cancelButton;
+@property (nonatomic, strong) UIButton *applyButton;
+@property (nonatomic, strong) UIView *subscriptionCard;
+@property (nonatomic, strong) UILabel *subscriptionTitleLabel;
+@property (nonatomic, strong) UILabel *subscriptionStatusLabel;
+@property (nonatomic, strong) UILabel *subscriptionPlanCaption;
+@property (nonatomic, strong) UILabel *subscriptionPlanValue;
+@property (nonatomic, strong) UILabel *subscriptionExpiryCaption;
+@property (nonatomic, strong) UILabel *subscriptionExpiryValue;
+@property (nonatomic, strong) UILabel *installationLabel;
+
+// State
 @property (nonatomic, strong) GPSLabSyntheticAnnotation *syntheticAnnotation;
 @property (nonatomic, strong, nullable) MKPointAnnotation *routeStartPin;
 @property (nonatomic, strong, nullable) MKPointAnnotation *routeEndPin;
@@ -86,7 +197,6 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 @property (nonatomic, strong, nullable) MKMapItem *pendingRouteStartItem;
 @property (nonatomic, strong, nullable) MKMapItem *pendingRouteEndItem;
-
 @property (nonatomic, assign) GPSLabMapPickMode pickMode;
 @property (nonatomic, assign) BOOL reopenRouteAfterPick;
 
@@ -95,11 +205,12 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 @property (nonatomic, strong, nullable) CLLocationManager *displayLocationManager;
 @property (nonatomic, strong, nullable) MKPointAnnotation *realLocationAnnotation;
 
-@property (nonatomic, strong, nullable) UISearchBar *searchBar;
-@property (nonatomic, strong, nullable) GPSLabSearchResultsViewController *searchResultsController;
-@property (nonatomic, strong, nullable) NSLayoutConstraint *resultHeightConstraint;
-
 @property (nonatomic, strong, nullable) NSTimer *tickTimer;
+@property (nonatomic, strong, nullable) NSTimer *snapshotTimer;
+
+@property (nonatomic, copy) NSArray<GPSLabProfile *> *profiles;
+@property (nonatomic, copy, nullable) NSString *selectedProfileIdentifier;
+@property (nonatomic, copy, nullable) NSString *appliedProfileIdentifier;
 
 @end
 
@@ -108,43 +219,40 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 #pragma mark - Lifecycle
 
 - (instancetype)init {
-    self = [super initWithNibName:nil bundle:nil];
-    return self;
+    return [super initWithNibName:nil bundle:nil];
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
 
-    self.view.backgroundColor = UIColor.systemBackgroundColor;
-    [self buildMap];
+    self.view.backgroundColor = GPSLabThemePanelColor();
+    self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
+    self.mapStyle = GPSLabMapStyleStandard;
+
+    [self buildBackground];
+    [self buildPanel];
     [self buildHeader];
     [self buildSearchBar];
-    [self buildControls];
-    [self buildPickBanner];
+    [self buildBody];
     [self installOutsideTapRecognizer];
     [self loadConfigurationIntoUI];
+    [self reloadProfiles];
     [self applyLocalization];
 
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(engineStateDidChange:)
-                                                 name:GPSLabEngineStateDidChangeNotification
-                                               object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(languageDidChange:)
-                                                 name:GPSLabLanguageDidChangeNotification
-                                               object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(keyboardWillChangeFrame:)
-                                                 name:UIKeyboardWillChangeFrameNotification
-                                               object:nil];
+    [[GPSLabScheduler sharedScheduler] startObserving];
+
+    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    [center addObserver:self selector:@selector(engineStateDidChange:) name:GPSLabEngineStateDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(languageDidChange:) name:GPSLabLanguageDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(licenseStateDidChange:) name:GPSLabLicenseStateDidChangeNotification object:nil];
+    [center addObserver:self selector:@selector(keyboardWillChangeFrame:) name:UIKeyboardWillChangeFrameNotification object:nil];
+    [center addObserver:self selector:@selector(applicationDidBecomeActive:) name:UIApplicationDidBecomeActiveNotification object:nil];
 }
 
 - (void)viewDidLayoutSubviews {
     [super viewDidLayoutSubviews];
-    // Keep the bounded results panel sized to the measured available area. The
-    // update only writes the constraint when the value actually changed, so the
-    // layout pass converges after a single extra pass.
     [self updateSearchResultsLayout];
+    [self updatePanelInsets];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -155,6 +263,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 - (void)viewDidAppear:(BOOL)animated {
     [super viewDidAppear:animated];
     [self startTickTimer];
+    [self scheduleBackgroundSnapshot];
 }
 
 - (void)viewDidDisappear:(BOOL)animated {
@@ -166,203 +275,229 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 - (void)dealloc {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self stopTickTimer];
+    [self.snapshotTimer invalidate];
     [self stopRealLocationDisplay];
 }
 
-#pragma mark - Map construction
-
-- (void)buildMap {
-    MKMapView *mapView = [[MKMapView alloc] initWithFrame:CGRectZero];
-    mapView.translatesAutoresizingMaskIntoConstraints = NO;
-    mapView.delegate = self;
-    mapView.showsUserLocation = NO;
-    mapView.pointOfInterestFilter = [MKPointOfInterestFilter filterIncludingAllCategories];
-    mapView.scrollEnabled = YES;
-    mapView.zoomEnabled = YES;
-    mapView.rotateEnabled = YES;
-    mapView.pitchEnabled = YES;
-    self.mapView = mapView;
-
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self
-                                                                          action:@selector(mapTapped:)];
-    tap.delegate = self;
-    [mapView addGestureRecognizer:tap];
-
-    UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self
-                                                                                            action:@selector(mapLongPressed:)];
-    longPress.delegate = self;
-    [mapView addGestureRecognizer:longPress];
-
-    self.syntheticAnnotation = [[GPSLabSyntheticAnnotation alloc] init];
-    self.syntheticAnnotation.title = GPSLabLocalized(@"overlay.annotation.synthetic");
-    [mapView addAnnotation:self.syntheticAnnotation];
-
-    // The map is a direct subview of the controller root and owns the remaining safe
-    // area. It is deliberately NOT embedded in a scrolling content stack.
-    [self.view addSubview:self.mapView];
-    UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
-    [NSLayoutConstraint activateConstraints:@[
-        [self.mapView.topAnchor constraintEqualToAnchor:safeArea.topAnchor],
-        [self.mapView.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor],
-        [self.mapView.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor],
-        [self.mapView.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor],
-    ]];
-
-    [self applyMapStyle:GPSLabMapStyleStandard];
+- (BOOL)isSearchActive {
+    return GPSLabSearchSessionIsActive(&_searchSession);
 }
 
-#pragma mark - Header construction
+- (BOOL)isSearchSessionActive {
+    return GPSLabSearchSessionIsActive(&_searchSession);
+}
+
+#pragma mark - Panel chrome
+
+- (void)buildBackground {
+    self.backgroundImageView = [[UIImageView alloc] initWithFrame:CGRectZero];
+    self.backgroundImageView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.backgroundImageView.contentMode = UIViewContentModeScaleAspectFill;
+    self.backgroundImageView.clipsToBounds = YES;
+    self.backgroundImageView.backgroundColor = GPSLabColorFromHex(0x3B474F);
+    [self.view addSubview:self.backgroundImageView];
+    UIView *dim = [[UIView alloc] initWithFrame:CGRectZero];
+    dim.translatesAutoresizingMaskIntoConstraints = NO;
+    dim.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.42];
+    [self.view addSubview:dim];
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.backgroundImageView.topAnchor constraintEqualToAnchor:self.view.topAnchor],
+        [self.backgroundImageView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [self.backgroundImageView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.backgroundImageView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [dim.topAnchor constraintEqualToAnchor:safe.topAnchor],
+        [dim.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor],
+        [dim.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+        [dim.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
+    ]];
+}
+
+- (void)buildPanel {
+    self.panelView = [[UIView alloc] initWithFrame:CGRectZero];
+    self.panelView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.panelView.backgroundColor = GPSLabThemePanelColor();
+    self.panelView.layer.cornerRadius = 28.0;
+    self.panelView.layer.masksToBounds = YES;
+    self.panelView.layer.borderWidth = 1.0;
+    self.panelView.layer.borderColor = [GPSLabThemeAccentColor() colorWithAlphaComponent:0.22].CGColor;
+    [self.view addSubview:self.panelView];
+
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    self.panelLeadingConstraint = [self.panelView.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:20.0];
+    self.panelTrailingConstraint = [self.panelView.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20.0];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.panelView.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6.0],
+        self.panelLeadingConstraint,
+        self.panelTrailingConstraint,
+        [self.panelView.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-22.0],
+    ]];
+}
+
+- (void)updatePanelInsets {
+    CGFloat width = CGRectGetWidth(self.view.bounds);
+    CGFloat inset = width < 460.0 ? 8.0 : 20.0;
+    self.panelLeadingConstraint.constant = inset;
+    self.panelTrailingConstraint.constant = -inset;
+}
 
 - (void)buildHeader {
-    UIVisualEffectView *header = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
-    header.translatesAutoresizingMaskIntoConstraints = NO;
-    header.layer.cornerRadius = 16.0;
-    header.layer.masksToBounds = YES;
-    [self.view addSubview:header];
-    self.headerView = header;
+    self.headerView = [[UIView alloc] initWithFrame:CGRectZero];
+    self.headerView.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.panelView addSubview:self.headerView];
 
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectZero];
-    title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
-    title.adjustsFontForContentSizeCategory = YES;
-    [title setContentCompressionResistancePriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisHorizontal];
-    self.titleLabel = title;
+    self.languageButton = [self chromeButtonWithTitle:@"EN" action:@selector(languageTapped)];
+    self.languageButton.titleLabel.font = GPSLabThemeFont(15.0, UIFontWeightBold);
+    self.languageButton.layer.cornerRadius = 14.0;
+    self.languageButton.layer.borderWidth = 1.0;
+    self.languageButton.layer.borderColor = GPSLabThemeBorderColor().CGColor;
+    self.languageButton.backgroundColor = GPSLabColorFromHex(0x1A1A20);
+    self.languageButton.contentEdgeInsets = UIEdgeInsetsMake(10.0, 13.0, 10.0, 13.0);
 
-    UILabel *enabledLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    enabledLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    enabledLabel.adjustsFontForContentSizeCategory = YES;
-    self.enabledLabel = enabledLabel;
+    self.infoButton = [self chromeButtonWithTitle:@"ⓘ" action:@selector(infoTapped)];
+    self.infoButton.titleLabel.font = GPSLabThemeFont(20.0, UIFontWeightBold);
+    self.infoButton.layer.cornerRadius = 14.0;
+    self.infoButton.layer.borderWidth = 1.0;
+    self.infoButton.layer.borderColor = GPSLabThemeBorderColor().CGColor;
+    self.infoButton.backgroundColor = GPSLabColorFromHex(0x1A1A20);
 
-    self.enabledSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
-    self.enabledSwitch.accessibilityLabel = GPSLabLocalized(@"overlay.enabled");
-    [self.enabledSwitch addTarget:self
-                           action:@selector(enabledChanged)
-                 forControlEvents:UIControlEventValueChanged];
+    self.headerTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.headerTitleLabel.font = GPSLabThemeFont(34.0, UIFontWeightHeavy);
+    self.headerTitleLabel.textColor = GPSLabThemeTextColor();
+    self.headerTitleLabel.textAlignment = NSTextAlignmentCenter;
+    // Nominal reference size stays 34pt; shrink-to-fit keeps "GPSLab" on one line
+    // on narrow iPhones (360/375) without moving the header row.
+    self.headerTitleLabel.adjustsFontSizeToFitWidth = YES;
+    self.headerTitleLabel.minimumScaleFactor = 0.6;
+    self.headerTitleLabel.numberOfLines = 1;
+    self.headerTitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    self.headerSubtitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.headerSubtitleLabel.font = GPSLabThemeFont(15.0, UIFontWeightRegular);
+    self.headerSubtitleLabel.textColor = GPSLabColorFromHex(0xB9A1D2);
+    self.headerSubtitleLabel.textAlignment = NSTextAlignmentCenter;
+    self.headerSubtitleLabel.adjustsFontSizeToFitWidth = YES;
+    self.headerSubtitleLabel.minimumScaleFactor = 0.7;
+    self.headerSubtitleLabel.numberOfLines = 1;
+    self.headerSubtitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+    UIStackView *titleColumn = [[UIStackView alloc] initWithArrangedSubviews:@[ self.headerTitleLabel, self.headerSubtitleLabel ]];
+    titleColumn.axis = UILayoutConstraintAxisVertical;
+    titleColumn.spacing = 8.0;
+    titleColumn.alignment = UIStackViewAlignmentCenter;
 
-    UIButton *settingsButton = [self headerButtonWithSymbol:@"gearshape" action:@selector(settingsTapped)];
-    UIButton *closeButton = [self headerButtonWithSymbol:@"xmark" action:@selector(closeTapped)];
-    self.headerSettingsButton = settingsButton;
-    self.headerCloseButton = closeButton;
-
-    UIStackView *topRow = [[UIStackView alloc] initWithArrangedSubviews:@[
-        title, [UIView new], enabledLabel, self.enabledSwitch, settingsButton, closeButton,
-    ]];
-    topRow.axis = UILayoutConstraintAxisHorizontal;
-    topRow.alignment = UIStackViewAlignmentCenter;
-    topRow.spacing = 8.0;
-
-    self.statusLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    self.statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
-    self.statusLabel.adjustsFontForContentSizeCategory = YES;
-    self.statusLabel.textColor = UIColor.secondaryLabelColor;
-    self.statusLabel.numberOfLines = 2;
-
-    UIStackView *column = [[UIStackView alloc] initWithArrangedSubviews:@[topRow, self.statusLabel]];
-    column.axis = UILayoutConstraintAxisVertical;
-    column.spacing = 6.0;
-    column.translatesAutoresizingMaskIntoConstraints = NO;
-    [header.contentView addSubview:column];
-
-    UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
+    self.masterButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.masterButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.masterDot = [[UIView alloc] initWithFrame:CGRectZero];
+    self.masterDot.translatesAutoresizingMaskIntoConstraints = NO;
+    self.masterDot.layer.cornerRadius = 7.0;
+    self.masterDot.userInteractionEnabled = NO;
+    [self.masterButton addSubview:self.masterDot];
+    [self.masterButton addTarget:self action:@selector(masterTapped) forControlEvents:UIControlEventTouchUpInside];
     [NSLayoutConstraint activateConstraints:@[
-        [header.topAnchor constraintEqualToAnchor:safeArea.topAnchor constant:12.0],
-        [header.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:12.0],
-        [header.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-12.0],
-
-        [column.topAnchor constraintEqualToAnchor:header.contentView.topAnchor constant:12.0],
-        [column.leadingAnchor constraintEqualToAnchor:header.contentView.leadingAnchor constant:14.0],
-        [column.trailingAnchor constraintEqualToAnchor:header.contentView.trailingAnchor constant:-14.0],
-        [column.bottomAnchor constraintEqualToAnchor:header.contentView.bottomAnchor constant:-12.0],
+        [self.masterButton.widthAnchor constraintEqualToConstant:44.0],
+        [self.masterButton.heightAnchor constraintEqualToConstant:44.0],
+        [self.masterDot.centerXAnchor constraintEqualToAnchor:self.masterButton.centerXAnchor],
+        [self.masterDot.centerYAnchor constraintEqualToAnchor:self.masterButton.centerYAnchor],
+        [self.masterDot.widthAnchor constraintEqualToConstant:14.0],
+        [self.masterDot.heightAnchor constraintEqualToConstant:14.0],
     ]];
+
+    self.closeButton = [self chromeButtonWithTitle:@"✕" action:@selector(closeTapped)];
+    self.closeButton.titleLabel.font = GPSLabThemeFont(22.0, UIFontWeightSemibold);
+    self.closeButton.layer.cornerRadius = 14.0;
+    self.closeButton.layer.borderWidth = 1.0;
+    self.closeButton.layer.borderColor = GPSLabThemeBorderColor().CGColor;
+    self.closeButton.backgroundColor = GPSLabColorFromHex(0x1A1A20);
+
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[
+        self.languageButton, self.infoButton, titleColumn, self.masterButton, self.closeButton,
+    ]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 10.0;
+    row.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.headerView addSubview:row];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.headerView.topAnchor constraintEqualToAnchor:self.panelView.topAnchor constant:14.0],
+        [self.headerView.leadingAnchor constraintEqualToAnchor:self.panelView.leadingAnchor],
+        [self.headerView.trailingAnchor constraintEqualToAnchor:self.panelView.trailingAnchor],
+        [row.topAnchor constraintEqualToAnchor:self.headerView.topAnchor],
+        [row.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:18.0],
+        [row.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-18.0],
+        [row.bottomAnchor constraintEqualToAnchor:self.headerView.bottomAnchor],
+        [self.infoButton.widthAnchor constraintEqualToConstant:44.0],
+        [self.infoButton.heightAnchor constraintEqualToConstant:44.0],
+        [self.closeButton.widthAnchor constraintEqualToConstant:46.0],
+        [self.closeButton.heightAnchor constraintEqualToConstant:46.0],
+        [self.languageButton.heightAnchor constraintEqualToConstant:44.0],
+    ]];
+    [self.languageButton setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
 }
 
-- (UIButton *)headerButtonWithSymbol:(NSString *)symbol action:(SEL)action {
+- (UIButton *)chromeButtonWithTitle:(NSString *)title action:(SEL)action {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.translatesAutoresizingMaskIntoConstraints = NO;
-    UIImageSymbolConfiguration *configuration =
-        [UIImageSymbolConfiguration configurationWithPointSize:16.0 weight:UIImageSymbolWeightSemibold];
-    [button setImage:[UIImage systemImageNamed:symbol withConfiguration:configuration]
-            forState:UIControlStateNormal];
-    button.tintColor = UIColor.labelColor;
+    [button setTitle:title forState:UIControlStateNormal];
+    [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    [button.widthAnchor constraintEqualToConstant:34.0].active = YES;
-    [button.heightAnchor constraintEqualToConstant:34.0].active = YES;
     return button;
 }
 
-#pragma mark - Visible search bar
+#pragma mark - Search
 
-// A standalone UISearchBar permanently owned by the fixed GPSLab container.
-// There is deliberately no controller-owned bar here: a hosted search
-// controller reparents its bar into its own presentation container on
-// activation (the overlay window has no navigation bar to host it), which
-// clipped the fixed field and produced a full-window blank panel. The bar below
-// is never reparented; the results controller is mounted once as a GPSLab
-// child.
 - (void)buildSearchBar {
     GPSLabSearchResultsViewController *results = [[GPSLabSearchResultsViewController alloc] init];
     GPSLabOverlayViewController *__weak weakSelf = self;
-    results.selectionHandler = ^(MKMapItem *item) {
-        [weakSelf applyMapItem:item];
-    };
-    results.doneHandler = ^{
-        [weakSelf endActiveSearch];
-    };
-    results.contentChangeHandler = ^{
-        [weakSelf updateSearchResultsLayout];
-    };
+    results.selectionHandler = ^(MKMapItem *item) { [weakSelf applyMapItem:item]; };
+    results.doneHandler = ^{ [weakSelf endActiveSearch]; };
+    results.contentChangeHandler = ^{ [weakSelf updateSearchResultsLayout]; };
     self.searchResultsController = results;
 
-    UIVisualEffectView *container = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
-    container.translatesAutoresizingMaskIntoConstraints = NO;
-    container.layer.cornerRadius = 14.0;
-    container.layer.masksToBounds = YES;
-    [self.view addSubview:container];
-    self.searchBarContainer = container;
+    self.searchBarContainer = [[UIView alloc] initWithFrame:CGRectZero];
+    self.searchBarContainer.translatesAutoresizingMaskIntoConstraints = NO;
+    self.searchBarContainer.backgroundColor = GPSLabThemeFieldColor();
+    self.searchBarContainer.layer.cornerRadius = 20.0;
+    self.searchBarContainer.layer.masksToBounds = YES;
+    self.searchBarContainer.layer.borderWidth = 1.0;
+    self.searchBarContainer.layer.borderColor = [GPSLabThemeAccentColor() colorWithAlphaComponent:0.34].CGColor;
+    [self.panelView addSubview:self.searchBarContainer];
 
     UISearchBar *bar = [[UISearchBar alloc] initWithFrame:CGRectZero];
     bar.translatesAutoresizingMaskIntoConstraints = NO;
     bar.delegate = self;
     bar.searchBarStyle = UISearchBarStyleMinimal;
-    // Native system colors keep typed text, placeholder and the insertion point
-    // legible in both light and dark appearance. Writing direction is left to
-    // the GPSLab scope (Arabic RTL / English LTR) so the bar inherits it rather
-    // than forcing a direction of its own.
+    bar.backgroundImage = [UIImage new];
     if (@available(iOS 13.0, *)) {
-        bar.searchTextField.textColor = UIColor.labelColor;
-        bar.searchTextField.tintColor = self.view.tintColor;
+        bar.searchTextField.textColor = UIColor.whiteColor;
+        bar.searchTextField.tintColor = GPSLabThemeAccentColor();
+        bar.searchTextField.backgroundColor = UIColor.clearColor;
     }
     self.searchBar = bar;
-    [container.contentView addSubview:bar];
+    [self.searchBarContainer addSubview:bar];
 
-    // FIXED bar height. A required equality is what stops the results panel's
-    // keyboard constraint from stretching the low-hugging bar/container (the
-    // v3 giant blank panel). The height is measured once from the native bar's
-    // intrinsic size and is identical in every phase (inactive/active/Cancel).
+    // FIXED bar height from the pure C helper; the reference search row is 62pt.
     CGFloat intrinsicHeight = bar.intrinsicContentSize.height;
     if (!(intrinsicHeight > 0.0)) {
-        intrinsicHeight = 56.0; // pre-layout fallback; never shrinks the bar
+        intrinsicHeight = 56.0;
     }
-    CGFloat barHeight = GPSLabSearchBarHeight(intrinsicHeight, 44.0);
+    CGFloat barHeight = GPSLabSearchBarHeight(intrinsicHeight, 62.0);
 
-    UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
-        [container.topAnchor constraintEqualToAnchor:self.headerView.bottomAnchor constant:8.0],
-        [container.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:12.0],
-        [container.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-12.0],
-
-        [bar.topAnchor constraintEqualToAnchor:container.contentView.topAnchor constant:4.0],
-        [bar.leadingAnchor constraintEqualToAnchor:container.contentView.leadingAnchor constant:6.0],
-        [bar.trailingAnchor constraintEqualToAnchor:container.contentView.trailingAnchor constant:-6.0],
-        [bar.bottomAnchor constraintEqualToAnchor:container.contentView.bottomAnchor constant:-4.0],
+        [self.searchBarContainer.topAnchor constraintEqualToAnchor:self.headerView.bottomAnchor constant:10.0],
+        [self.searchBarContainer.leadingAnchor constraintEqualToAnchor:self.panelView.leadingAnchor constant:20.0],
+        [self.searchBarContainer.trailingAnchor constraintEqualToAnchor:self.panelView.trailingAnchor constant:-20.0],
+        [self.searchBarContainer.heightAnchor constraintEqualToConstant:barHeight],
+        [bar.topAnchor constraintEqualToAnchor:self.searchBarContainer.topAnchor],
+        [bar.bottomAnchor constraintEqualToAnchor:self.searchBarContainer.bottomAnchor],
+        [bar.leadingAnchor constraintEqualToAnchor:self.searchBarContainer.leadingAnchor constant:6.0],
+        [bar.trailingAnchor constraintEqualToAnchor:self.searchBarContainer.trailingAnchor constant:-6.0],
         [bar.heightAnchor constraintEqualToConstant:barHeight],
     ]];
 
     [self mountSearchResultsChild];
 }
 
-// Mounts the results controller ONCE as a GPSLab-owned child (never presented by
-// UIKit for search). Its panel sits below the fixed search container, bounded to
-// the available area above the keyboard layout guide, so the map stays visible.
 - (void)mountSearchResultsChild {
     GPSLabSearchResultsViewController *results = self.searchResultsController;
     if (results == nil) {
@@ -371,39 +506,27 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     [self addChildViewController:results];
     UIView *resultsView = results.view;
     resultsView.translatesAutoresizingMaskIntoConstraints = NO;
-    resultsView.layer.cornerRadius = 14.0;
+    resultsView.layer.cornerRadius = 16.0;
     resultsView.layer.masksToBounds = YES;
     resultsView.hidden = YES;
-    // Below the fixed container in z-order so the panel can never cover the
-    // header or the search field.
-    [self.view insertSubview:resultsView belowSubview:self.searchBarContainer];
+    [self.panelView insertSubview:resultsView belowSubview:self.searchBarContainer];
     [results didMoveToParentViewController:self];
 
-    UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
-    // The panel height is an explicit required equality to the clamped desired
-    // value (0 when inactive), so the solver never maximizes it and the fixed
-    // bar/container can never be stretched.
     NSLayoutConstraint *height = [resultsView.heightAnchor constraintEqualToConstant:0.0];
     self.resultHeightConstraint = height;
-
-    // Keyboard avoidance is a NON-required upper bound only. It never pushes the
-    // panel (or anything above it) and is silently broken when no space exists.
     NSLayoutConstraint *bottomLimit = [resultsView.bottomAnchor
         constraintLessThanOrEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor
                                  constant:-8.0];
     bottomLimit.priority = 999.0;
 
     [NSLayoutConstraint activateConstraints:@[
-        // Only the field's bottom constant; no feedback into the bar/container.
         [resultsView.topAnchor constraintEqualToAnchor:self.searchBarContainer.bottomAnchor constant:8.0],
-        [resultsView.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:12.0],
-        [resultsView.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-12.0],
+        [resultsView.leadingAnchor constraintEqualToAnchor:self.panelView.leadingAnchor constant:20.0],
+        [resultsView.trailingAnchor constraintEqualToAnchor:self.panelView.trailingAnchor constant:-20.0],
         height,
         bottomLimit,
     ]];
 }
-
-#pragma mark - Results panel layout
 
 - (void)setSearchResultsVisible:(BOOL)visible {
     GPSLabSearchResultsViewController *results = self.searchResultsController;
@@ -418,13 +541,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     }
 }
 
-// Sizes the bounded results panel from the measured keyboard layout guide. The
-// required height equality is the only thing this writes (never the bar or the
-// container), and only when the value actually changed, so the layout pass
-// converges after at most one extra pass (no recursive height churn).
 - (void)updateSearchResultsLayout {
-    if (self.resultHeightConstraint == nil ||
-        self.searchResultsController == nil ||
+    if (self.resultHeightConstraint == nil || self.searchResultsController == nil ||
         !self.searchResultsController.isViewLoaded) {
         return;
     }
@@ -434,14 +552,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         }
         return;
     }
-
-    // Measure in the canvas' coordinate system; the guide never extends past
-    // the viewport and clamps to a non-negative available height.
     CGFloat viewport = CGRectGetHeight(self.view.bounds);
-    CGFloat topOffset = CGRectGetMaxY(self.searchBarContainer.frame) + 8.0;
+    CGRect containerFrame = [self.searchBarContainer convertRect:self.searchBarContainer.bounds toView:self.view];
+    CGFloat topOffset = CGRectGetMaxY(containerFrame) + 8.0;
     CGRect guide = self.view.keyboardLayoutGuide.layoutFrame;
-    // The bottom bound keeps an 8pt gap: pass guide.top - 8 so the computed
-    // desired height satisfies results.bottom <= guide.top - 8 exactly.
     CGFloat available = GPSLabSearchAvailableHeight(viewport, topOffset, CGRectGetMinY(guide) - 8.0);
 
     UIFontMetrics *metrics = [UIFontMetrics metricsForTextStyle:UIFontTextStyleBody];
@@ -454,7 +568,6 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     CGFloat content = self.searchResultsController.estimatedContentHeight;
     BOOL hasResults = self.searchResultsController.hasResults;
     CGFloat desired = GPSLabSearchResultsHeight(available, viewport, content, hasResults ? 1 : 0, layout);
-
     if (fabs(desired - self.resultHeightConstraint.constant) > 0.5) {
         self.resultHeightConstraint.constant = desired;
     }
@@ -465,137 +578,591 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     if (self.searchResultsController == nil || self.searchResultsController.view.hidden) {
         return;
     }
-    // Refresh the guide, then recompute the required panel height so it tracks
-    // the keyboard. The optional bottom bound is a safety net only.
     [self.view layoutIfNeeded];
     [self updateSearchResultsLayout];
 }
 
-#pragma mark - Floating controls
-
-- (void)buildControls {
-    UIButton *center = [self circularButtonWithSymbol:@"location.fill" action:@selector(centerTapped)];
-    UIButton *favorites = [self circularButtonWithSymbol:@"star" action:@selector(favoritesTapped)];
-    UIButton *route = [self circularButtonWithSymbol:@"arrow.triangle.turn.up.right.diamond.fill"
-                                              action:@selector(routeTapped)];
-    UIButton *options = [self circularButtonWithSymbol:@"slider.horizontal.3" action:@selector(settingsTapped)];
-    self.controlButtons = @[center, favorites, route, options];
-
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[center, favorites, route, options]];
-    stack.translatesAutoresizingMaskIntoConstraints = NO;
-    stack.axis = UILayoutConstraintAxisVertical;
-    stack.spacing = 12.0;
-    [self.view addSubview:stack];
-    self.controlsStack = stack;
-
-    UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
-    [NSLayoutConstraint activateConstraints:@[
-        [stack.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-16.0],
-        [stack.centerYAnchor constraintEqualToAnchor:safeArea.centerYAnchor],
-    ]];
+- (void)endActiveSearch {
+    BOOL wasActive = GPSLabSearchSessionIsActive(&_searchSession);
+    [self.searchBar resignFirstResponder];
+    [self setSearchResultsVisible:NO];
+    [self.searchResultsController cancelActiveSearch];
+    [self.searchResultsController endSearchSession];
+    GPSLabSearchSessionEnd(&_searchSession);
+    self.searchBar.text = @"";
+    self.searchBar.showsCancelButton = NO;
+    if (wasActive) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [[GPSLabModalCoordinator sharedCoordinator] resolvePendingPresentation];
+        });
+    }
 }
 
-- (UIButton *)circularButtonWithSymbol:(NSString *)symbol action:(SEL)action {
+#pragma mark - Body
+
+- (void)buildBody {
+    self.bodyScrollView = [[UIScrollView alloc] initWithFrame:CGRectZero];
+    self.bodyScrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.bodyScrollView.alwaysBounceVertical = YES;
+    self.bodyScrollView.keyboardDismissMode = UIScrollViewKeyboardDismissModeInteractive;
+    self.bodyScrollView.showsVerticalScrollIndicator = NO;
+    [self.panelView addSubview:self.bodyScrollView];
+
+    self.bodyStack = [[UIStackView alloc] initWithFrame:CGRectZero];
+    self.bodyStack.translatesAutoresizingMaskIntoConstraints = NO;
+    self.bodyStack.axis = UILayoutConstraintAxisVertical;
+    self.bodyStack.spacing = 18.0;
+    [self.bodyScrollView addSubview:self.bodyStack];
+
+    UIView *resultsView = self.searchResultsController.view;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.bodyScrollView.topAnchor constraintEqualToAnchor:resultsView.bottomAnchor constant:12.0],
+        [self.bodyScrollView.leadingAnchor constraintEqualToAnchor:self.panelView.leadingAnchor],
+        [self.bodyScrollView.trailingAnchor constraintEqualToAnchor:self.panelView.trailingAnchor],
+        [self.bodyScrollView.bottomAnchor constraintEqualToAnchor:self.panelView.bottomAnchor],
+        [self.bodyStack.topAnchor constraintEqualToAnchor:self.bodyScrollView.contentLayoutGuide.topAnchor constant:2.0],
+        [self.bodyStack.bottomAnchor constraintEqualToAnchor:self.bodyScrollView.contentLayoutGuide.bottomAnchor constant:-24.0],
+        [self.bodyStack.leadingAnchor constraintEqualToAnchor:self.bodyScrollView.contentLayoutGuide.leadingAnchor constant:20.0],
+        [self.bodyStack.trailingAnchor constraintEqualToAnchor:self.bodyScrollView.contentLayoutGuide.trailingAnchor constant:-20.0],
+        [self.bodyStack.widthAnchor constraintEqualToAnchor:self.bodyScrollView.frameLayoutGuide.widthAnchor constant:-40.0],
+    ]];
+
+    [self.bodyStack addArrangedSubview:[self mapAreaContainer]];
+    [self.bodyStack addArrangedSubview:[self controlCardView]];
+    self.profilesPanel = [[GPSLabProfilesPanelView alloc] initWithFrame:CGRectZero];
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    self.profilesPanel.addHandler = ^{
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf != nil) {
+            [strongSelf presentProfileFormForProfile:nil];
+        }
+    };
+    self.profilesPanel.selectHandler = ^(GPSLabProfile *profile) { [weakSelf selectProfile:profile]; };
+    self.profilesPanel.editHandler = ^(GPSLabProfile *profile) {
+        [weakSelf presentProfileFormForProfile:profile];
+    };
+    self.profilesPanel.applyHandler = ^(GPSLabProfile *profile) { [weakSelf applyProfile:profile]; };
+    [self.bodyStack addArrangedSubview:self.profilesPanel];
+    [self.bodyStack addArrangedSubview:[self simulationGroupView]];
+    [self.bodyStack addArrangedSubview:[self actionsView]];
+    [self.bodyStack addArrangedSubview:[self subscriptionCardView]];
+}
+
+- (UIView *)mapAreaContainer {
+    UIView *container = [[UIView alloc] initWithFrame:CGRectZero];
+
+    self.mapCard = [[UIView alloc] initWithFrame:CGRectZero];
+    self.mapCard.translatesAutoresizingMaskIntoConstraints = NO;
+    self.mapCard.backgroundColor = GPSLabColorFromHex(0xE8E7DF);
+    self.mapCard.layer.cornerRadius = 24.0;
+    self.mapCard.layer.masksToBounds = YES;
+    self.mapCard.layer.borderWidth = 1.0;
+    self.mapCard.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.08].CGColor;
+
+    MKMapView *mapView = [[MKMapView alloc] initWithFrame:CGRectZero];
+    mapView.translatesAutoresizingMaskIntoConstraints = NO;
+    mapView.delegate = self;
+    mapView.showsUserLocation = NO;
+    mapView.pointOfInterestFilter = [MKPointOfInterestFilter filterIncludingAllCategories];
+    mapView.scrollEnabled = YES;
+    mapView.zoomEnabled = YES;
+    mapView.rotateEnabled = YES;
+    mapView.pitchEnabled = YES;
+    self.mapView = mapView;
+    [self.mapCard addSubview:mapView];
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(mapTapped:)];
+    tap.delegate = self;
+    [mapView addGestureRecognizer:tap];
+    UILongPressGestureRecognizer *longPress = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(mapLongPressed:)];
+    longPress.delegate = self;
+    [mapView addGestureRecognizer:longPress];
+
+    self.syntheticAnnotation = [[GPSLabSyntheticAnnotation alloc] init];
+    self.syntheticAnnotation.title = GPSLabLocalized(@"overlay.annotation.synthetic");
+    [mapView addAnnotation:self.syntheticAnnotation];
+
+    // The parent scroll view must yield to MapKit while a drag starts on the map.
+    UIPanGestureRecognizer *shield = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(mapPanShield:)];
+    shield.delegate = self;
+    shield.cancelsTouchesInView = NO;
+    [self.mapCard addGestureRecognizer:shield];
+
+    self.bookmarkButton = [self mapOverlayButtonWithSymbol:@"heart" action:@selector(bookmarkTapped)];
+    self.centerButton = [self mapOverlayButtonWithSymbol:@"location.fill" action:@selector(centerTapped)];
+    [self.mapCard addSubview:self.bookmarkButton];
+    [self.mapCard addSubview:self.centerButton];
+
+    self.pickBannerLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    self.pickBannerLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.pickBannerLabel.font = GPSLabThemeFont(13.0, UIFontWeightSemibold);
+    self.pickBannerLabel.textColor = UIColor.whiteColor;
+    self.pickBannerLabel.backgroundColor = [UIColor colorWithWhite:0.1 alpha:0.86];
+    self.pickBannerLabel.layer.cornerRadius = 10.0;
+    self.pickBannerLabel.layer.masksToBounds = YES;
+    self.pickBannerLabel.layer.masksToBounds = YES;
+    self.pickBannerLabel.textAlignment = NSTextAlignmentCenter;
+    self.pickBannerLabel.hidden = YES;
+    [self.mapCard addSubview:self.pickBannerLabel];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [mapView.topAnchor constraintEqualToAnchor:self.mapCard.topAnchor],
+        [mapView.bottomAnchor constraintEqualToAnchor:self.mapCard.bottomAnchor],
+        [mapView.leadingAnchor constraintEqualToAnchor:self.mapCard.leadingAnchor],
+        [mapView.trailingAnchor constraintEqualToAnchor:self.mapCard.trailingAnchor],
+        [self.bookmarkButton.topAnchor constraintEqualToAnchor:self.mapCard.topAnchor constant:16.0],
+        [self.bookmarkButton.leadingAnchor constraintEqualToAnchor:self.mapCard.leadingAnchor constant:16.0],
+        [self.centerButton.topAnchor constraintEqualToAnchor:self.mapCard.topAnchor constant:16.0],
+        [self.centerButton.trailingAnchor constraintEqualToAnchor:self.mapCard.trailingAnchor constant:-16.0],
+        [self.pickBannerLabel.centerXAnchor constraintEqualToAnchor:self.mapCard.centerXAnchor],
+        [self.pickBannerLabel.bottomAnchor constraintEqualToAnchor:self.mapCard.bottomAnchor constant:-12.0],
+        [self.pickBannerLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.mapCard.leadingAnchor constant:12.0],
+        [self.pickBannerLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.mapCard.trailingAnchor constant:-12.0],
+    ]];
+
+    self.favoritesCard = [[UIView alloc] initWithFrame:CGRectZero];
+    self.favoritesCard.translatesAutoresizingMaskIntoConstraints = NO;
+    self.favoritesCard.backgroundColor = GPSLabThemeCardColor();
+    self.favoritesCard.layer.cornerRadius = 24.0;
+    self.favoritesCard.layer.masksToBounds = YES;
+    self.favoritesCard.layer.borderWidth = 0.5;
+    self.favoritesCard.layer.borderColor = GPSLabThemeBorderColor().CGColor;
+    self.favoritesCard.hidden = YES;
+
+    UIScrollView *favoritesScroll = [[UIScrollView alloc] initWithFrame:CGRectZero];
+    favoritesScroll.translatesAutoresizingMaskIntoConstraints = NO;
+    self.favoritesList = [[UIStackView alloc] initWithFrame:CGRectZero];
+    self.favoritesList.translatesAutoresizingMaskIntoConstraints = NO;
+    self.favoritesList.axis = UILayoutConstraintAxisVertical;
+    self.favoritesList.spacing = 8.0;
+    [favoritesScroll addSubview:self.favoritesList];
+    [self.favoritesCard addSubview:favoritesScroll];
+
+    [container addSubview:self.mapCard];
+    [container addSubview:self.favoritesCard];
+    self.mapCard.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.mapCard.topAnchor constraintEqualToAnchor:container.topAnchor],
+        [self.mapCard.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [self.mapCard.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [self.mapCard.heightAnchor constraintEqualToConstant:278.0],
+        [self.favoritesCard.topAnchor constraintEqualToAnchor:container.topAnchor],
+        [self.favoritesCard.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [self.favoritesCard.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [self.favoritesCard.heightAnchor constraintEqualToConstant:278.0],
+        [self.favoritesCard.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
+        [favoritesScroll.topAnchor constraintEqualToAnchor:self.favoritesCard.topAnchor constant:12.0],
+        [favoritesScroll.bottomAnchor constraintEqualToAnchor:self.favoritesCard.bottomAnchor constant:-12.0],
+        [favoritesScroll.leadingAnchor constraintEqualToAnchor:self.favoritesCard.leadingAnchor constant:12.0],
+        [favoritesScroll.trailingAnchor constraintEqualToAnchor:self.favoritesCard.trailingAnchor constant:-12.0],
+        [self.favoritesList.topAnchor constraintEqualToAnchor:favoritesScroll.contentLayoutGuide.topAnchor],
+        [self.favoritesList.bottomAnchor constraintEqualToAnchor:favoritesScroll.contentLayoutGuide.bottomAnchor],
+        [self.favoritesList.leadingAnchor constraintEqualToAnchor:favoritesScroll.contentLayoutGuide.leadingAnchor],
+        [self.favoritesList.trailingAnchor constraintEqualToAnchor:favoritesScroll.contentLayoutGuide.trailingAnchor],
+        [self.favoritesList.widthAnchor constraintEqualToAnchor:favoritesScroll.frameLayoutGuide.widthAnchor],
+    ]];
+    return container;
+}
+
+- (UIButton *)mapOverlayButtonWithSymbol:(NSString *)symbol action:(SEL)action {
     UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
     button.translatesAutoresizingMaskIntoConstraints = NO;
     UIImageSymbolConfiguration *configuration =
-        [UIImageSymbolConfiguration configurationWithPointSize:18.0 weight:UIImageSymbolWeightSemibold];
-    [button setImage:[UIImage systemImageNamed:symbol withConfiguration:configuration]
-            forState:UIControlStateNormal];
-    button.tintColor = UIColor.labelColor;
-    button.backgroundColor = UIColor.secondarySystemBackgroundColor;
-    button.layer.cornerRadius = 24.0;
+        [UIImageSymbolConfiguration configurationWithPointSize:20.0 weight:UIImageSymbolWeightSemibold];
+    [button setImage:[UIImage systemImageNamed:symbol withConfiguration:configuration] forState:UIControlStateNormal];
+    button.tintColor = UIColor.whiteColor;
+    button.backgroundColor = GPSLabColorFromHex(0x26262C);
+    button.layer.cornerRadius = 14.0;
     button.layer.masksToBounds = YES;
-    button.layer.borderWidth = 0.5;
-    button.layer.borderColor = UIColor.separatorColor.CGColor;
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
-    [button.widthAnchor constraintEqualToConstant:48.0].active = YES;
-    [button.heightAnchor constraintEqualToConstant:48.0].active = YES;
+    [NSLayoutConstraint activateConstraints:@[
+        [button.widthAnchor constraintEqualToConstant:46.0],
+        [button.heightAnchor constraintEqualToConstant:46.0],
+    ]];
     return button;
 }
 
-#pragma mark - Pick banner
+#pragma mark - Control card
 
-- (void)buildPickBanner {
-    UIVisualEffectView *banner = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
-    banner.translatesAutoresizingMaskIntoConstraints = NO;
-    banner.layer.cornerRadius = 14.0;
-    banner.layer.masksToBounds = YES;
-    banner.hidden = YES;
-    [self.view addSubview:banner];
-    self.pickBanner = banner;
+- (UIView *)controlCardView {
+    self.controlCard = [[UIView alloc] initWithFrame:CGRectZero];
+    self.controlCard.backgroundColor = GPSLabThemeCardColor();
+    GPSLabThemeApplyCardStyle(self.controlCard, 24.0);
 
-    self.pickBannerLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    self.pickBannerLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    self.pickBannerLabel.adjustsFontForContentSizeCategory = YES;
-    self.pickBannerLabel.numberOfLines = 0;
+    self.mapFavoritesSegment = [[UISegmentedControl alloc] initWithItems:@[@"", @""]];
+    self.mapFavoritesSegment.selectedSegmentIndex = 0;
+    self.mapFavoritesSegment.selectedSegmentTintColor = GPSLabThemeAccentColor();
+    [self.mapFavoritesSegment addTarget:self action:@selector(mapFavoritesChanged) forControlEvents:UIControlEventValueChanged];
 
-    UIButton *cancel = [UIButton buttonWithType:UIButtonTypeSystem];
-    cancel.titleLabel.adjustsFontForContentSizeCategory = YES;
-    [cancel addTarget:self action:@selector(cancelPicking) forControlEvents:UIControlEventTouchUpInside];
-    self.pickCancelButton = cancel;
+    self.staticRouteSegment = [[UISegmentedControl alloc] initWithItems:@[@"", @""]];
+    self.staticRouteSegment.selectedSegmentIndex = 0;
+    self.staticRouteSegment.selectedSegmentTintColor = GPSLabThemeAccentColor();
+    [self.staticRouteSegment addTarget:self action:@selector(staticRouteChanged) forControlEvents:UIControlEventValueChanged];
 
-    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[self.pickBannerLabel, cancel]];
+    self.coordsTitleLabel = [self themedLabel:13.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    self.coordsBigLabel = [self themedLabel:24.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
+    self.coordsBigLabel.numberOfLines = 2;
+    [GPSLabLocalization forceLeftToRight:self.coordsBigLabel];
+
+    NSArray<NSString *> *coordKeys = @[@"panel.coord.latitude", @"panel.coord.longitude", @"panel.coord.altitude"];
+    NSMutableArray<UILabel *> *coordValues = [NSMutableArray array];
+    NSMutableArray<UIView *> *coordBoxes = [NSMutableArray array];
+    for (NSString *key in coordKeys) {
+        UIView *box = [[UIView alloc] initWithFrame:CGRectZero];
+        box.backgroundColor = GPSLabColorFromHex(0x0F0F12);
+        box.layer.cornerRadius = 13.0;
+        UILabel *caption = [self themedLabel:12.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+        caption.textAlignment = NSTextAlignmentCenter;
+        caption.accessibilityIdentifier = key;
+        UILabel *value = [self themedLabel:18.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
+        value.textAlignment = NSTextAlignmentCenter;
+        value.adjustsFontSizeToFitWidth = YES;
+        value.minimumScaleFactor = 0.6;
+        [GPSLabLocalization forceLeftToRight:value];
+        [coordValues addObject:value];
+        UIStackView *cell = [[UIStackView alloc] initWithArrangedSubviews:@[ caption, value ]];
+        cell.axis = UILayoutConstraintAxisVertical;
+        cell.spacing = 6.0;
+        cell.translatesAutoresizingMaskIntoConstraints = NO;
+        [box addSubview:cell];
+        [NSLayoutConstraint activateConstraints:@[
+            [cell.topAnchor constraintEqualToAnchor:box.topAnchor constant:10.0],
+            [cell.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-10.0],
+            [cell.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:8.0],
+            [cell.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-8.0],
+        ]];
+        [coordBoxes addObject:box];
+    }
+    self.coordValueLabels = coordValues;
+    UIStackView *coordGrid = [[UIStackView alloc] initWithArrangedSubviews:coordBoxes];
+    coordGrid.axis = UILayoutConstraintAxisHorizontal;
+    coordGrid.distribution = UIStackViewDistributionFillEqually;
+    coordGrid.spacing = 8.0;
+
+    self.headingView = [[GPSLabHeadingView alloc] initWithFrame:CGRectZero];
+    self.headingView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.headingView.heading = 0.0;
+    self.headingValueLabel = [self themedLabel:15.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    [GPSLabLocalization forceLeftToRight:self.headingValueLabel];
+    [self.headingView.heightAnchor constraintEqualToConstant:28.0].active = YES;
+    UIStackView *headingRow = [[UIStackView alloc] initWithArrangedSubviews:@[ self.headingView, self.headingValueLabel ]];
+    headingRow.axis = UILayoutConstraintAxisHorizontal;
+    headingRow.alignment = UIStackViewAlignmentCenter;
+    headingRow.spacing = 12.0;
+    [self.headingValueLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+    // Toggles
+    self.driftSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
+    [self.driftSwitch addTarget:self action:@selector(driftChanged) forControlEvents:UIControlEventValueChanged];
+    self.keepLastSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
+    [self.keepLastSwitch addTarget:self action:@selector(keepLastChanged) forControlEvents:UIControlEventValueChanged];
+    self.realLocationSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
+    [self.realLocationSwitch addTarget:self action:@selector(realLocationChanged) forControlEvents:UIControlEventValueChanged];
+
+    self.scheduleButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.scheduleButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.scheduleButton.titleLabel.font = GPSLabThemeFont(13.0, UIFontWeightMedium);
+    [self.scheduleButton setTitleColor:GPSLabThemeAccentSoftColor() forState:UIControlStateNormal];
+    self.scheduleButton.backgroundColor = GPSLabColorFromHex(0x2B2B30);
+    self.scheduleButton.layer.cornerRadius = 14.0;
+    self.scheduleButton.layer.masksToBounds = YES;
+    self.scheduleButton.contentEdgeInsets = UIEdgeInsetsMake(10.0, 14.0, 10.0, 14.0);
+    [self.scheduleButton addTarget:self action:@selector(scheduleTapped) forControlEvents:UIControlEventTouchUpInside];
+
+    self.routeSection = [self routeSectionView];
+
+    UIStackView *column = [[UIStackView alloc] initWithArrangedSubviews:@[
+        self.mapFavoritesSegment, self.staticRouteSegment,
+        self.coordsTitleLabel, self.coordsBigLabel, coordGrid, headingRow,
+        [self toggleRowWithKey:@"panel.toggle.drift" control:self.driftSwitch],
+        [self toggleRowWithKey:@"panel.toggle.keepLast" control:self.keepLastSwitch],
+        [self toggleRowWithKey:@"panel.toggle.realLocation" control:self.realLocationSwitch],
+        [self scheduleRowView],
+        self.routeSection,
+    ]];
+    column.axis = UILayoutConstraintAxisVertical;
+    column.spacing = 12.0;
+    column.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.controlCard addSubview:column];
+    [NSLayoutConstraint activateConstraints:@[
+        [column.topAnchor constraintEqualToAnchor:self.controlCard.topAnchor constant:16.0],
+        [column.bottomAnchor constraintEqualToAnchor:self.controlCard.bottomAnchor constant:-16.0],
+        [column.leadingAnchor constraintEqualToAnchor:self.controlCard.leadingAnchor constant:16.0],
+        [column.trailingAnchor constraintEqualToAnchor:self.controlCard.trailingAnchor constant:-16.0],
+    ]];
+    return self.controlCard;
+}
+
+- (UIStackView *)toggleRowWithKey:(NSString *)key control:(UIView *)control {
+    UILabel *label = [self themedLabel:16.0 weight:UIFontWeightRegular color:GPSLabThemeTextColor()];
+    label.accessibilityIdentifier = key;
+    label.text = GPSLabLocalized(key);
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[ label, [UIView new], control ]];
     row.axis = UILayoutConstraintAxisHorizontal;
     row.alignment = UIStackViewAlignmentCenter;
     row.spacing = 12.0;
-    row.translatesAutoresizingMaskIntoConstraints = NO;
-    [banner.contentView addSubview:row];
+    row.backgroundColor = UIColor.clearColor;
+    return row;
+}
 
-    [NSLayoutConstraint activateConstraints:@[
-        [banner.topAnchor constraintEqualToAnchor:self.searchBarContainer.bottomAnchor constant:8.0],
-        [banner.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
-        [banner.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor
-                                                          constant:12.0],
-        [banner.trailingAnchor constraintLessThanOrEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor
-                                                         constant:-12.0],
-        [row.topAnchor constraintEqualToAnchor:banner.contentView.topAnchor constant:10.0],
-        [row.leadingAnchor constraintEqualToAnchor:banner.contentView.leadingAnchor constant:14.0],
-        [row.trailingAnchor constraintEqualToAnchor:banner.contentView.trailingAnchor constant:-14.0],
-        [row.bottomAnchor constraintEqualToAnchor:banner.contentView.bottomAnchor constant:-10.0],
+- (UIView *)scheduleRowView {
+    UILabel *label = [self themedLabel:16.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
+    label.accessibilityIdentifier = @"panel.schedule";
+    label.text = GPSLabLocalized(@"panel.schedule");
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[ label, [UIView new], self.scheduleButton ]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 16.0;
+    return row;
+}
+
+- (UIStackView *)routeSectionView {
+    self.routeStartLabel = [self themedLabel:14.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    self.routeEndLabel = [self themedLabel:14.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    UIButton *pickStart = [self pillButtonWithKey:@"route.setStart" action:@selector(pickRouteStart)];
+    UIButton *pickEnd = [self pillButtonWithKey:@"route.setEnd" action:@selector(pickRouteEnd)];
+    self.routeModeSegment = [[UISegmentedControl alloc] initWithItems:@[@"", @"", @"", @""]];
+    self.routeModeSegment.selectedSegmentTintColor = GPSLabThemeAccentColor();
+    [self.routeModeSegment addTarget:self action:@selector(routeModeChanged) forControlEvents:UIControlEventValueChanged];
+    self.routeSpeedSlider = [[UISlider alloc] initWithFrame:CGRectZero];
+    self.routeSpeedSlider.minimumValue = 1.0;
+    self.routeSpeedSlider.maximumValue = 300.0;
+    self.routeSpeedSlider.value = 50.0;
+    [self.routeSpeedSlider addTarget:self action:@selector(routeSpeedChanged) forControlEvents:UIControlEventValueChanged];
+    self.routeSpeedValueLabel = [self themedLabel:14.0 weight:UIFontWeightMedium color:GPSLabThemeMutedColor()];
+    [GPSLabLocalization forceLeftToRight:self.routeSpeedValueLabel];
+    self.routePlayButton = [self pillButtonWithKey:@"route.start" action:@selector(routePlayTapped)];
+    self.routeStopButton = [self pillButtonWithKey:@"route.stop" action:@selector(routeStopTapped)];
+    UIStackView *playback = [[UIStackView alloc] initWithArrangedSubviews:@[ self.routePlayButton, self.routeStopButton ]];
+    playback.axis = UILayoutConstraintAxisHorizontal;
+    playback.distribution = UIStackViewDistributionFillEqually;
+    playback.spacing = 8.0;
+    self.routeStopBehaviorSegment = [[UISegmentedControl alloc] initWithItems:@[@"", @""]];
+    self.routeStopBehaviorSegment.selectedSegmentTintColor = GPSLabThemeAccentColor();
+    [self.routeStopBehaviorSegment addTarget:self action:@selector(routeStopBehaviorChanged) forControlEvents:UIControlEventValueChanged];
+
+    UIStackView *section = [[UIStackView alloc] initWithArrangedSubviews:@[
+        self.routeStartLabel, pickStart, self.routeEndLabel, pickEnd,
+        self.routeModeSegment,
+        [self sliderRowWithSlider:self.routeSpeedSlider valueLabel:self.routeSpeedValueLabel],
+        playback, self.routeStopBehaviorSegment,
     ]];
+    section.axis = UILayoutConstraintAxisVertical;
+    section.spacing = 10.0;
+    section.hidden = YES;
+    return section;
 }
 
-- (void)updatePickBanner {
-    if (self.pickMode == GPSLabMapPickModeNone) {
-        self.pickBanner.hidden = YES;
-        return;
+- (UIStackView *)sliderRowWithSlider:(UISlider *)slider valueLabel:(UILabel *)valueLabel {
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[ slider, valueLabel ]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.spacing = 10.0;
+    [valueLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    return row;
+}
+
+- (UIButton *)pillButtonWithKey:(NSString *)key action:(SEL)action {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button setTitle:GPSLabLocalized(key) forState:UIControlStateNormal];
+    [button setTitleColor:GPSLabThemeAccentSoftColor() forState:UIControlStateNormal];
+    button.titleLabel.font = GPSLabThemeFont(14.0, UIFontWeightSemibold);
+    button.accessibilityIdentifier = key;
+    button.backgroundColor = GPSLabColorFromHex(0x17171D);
+    button.layer.cornerRadius = 12.0;
+    button.layer.borderWidth = 0.5;
+    button.layer.borderColor = [GPSLabThemeAccentColor() colorWithAlphaComponent:0.35].CGColor;
+    button.contentEdgeInsets = UIEdgeInsetsMake(10.0, 10.0, 10.0, 10.0);
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+- (UILabel *)themedLabel:(CGFloat)size weight:(UIFontWeight)weight color:(UIColor *)color {
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectZero];
+    label.font = GPSLabThemeFont(size, weight);
+    label.textColor = color;
+    return label;
+}
+
+#pragma mark - Modules / actions / subscription
+
+- (UIView *)simulationGroupView {
+    UIStackView *group = [[UIStackView alloc] initWithFrame:CGRectZero];
+    group.axis = UILayoutConstraintAxisVertical;
+    group.spacing = 8.0;
+    UILabel *title = [self themedLabel:13.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    title.accessibilityIdentifier = @"sim.title";
+    title.text = GPSLabLocalized(@"sim.title");
+    [group addArrangedSubview:title];
+    [group addArrangedSubview:[self simulationRowWithIcon:@"⌁" titleKey:@"sim.wifi.title"
+                                                subtitleKey:@"sim.wifi.subtitle" action:@selector(wifiSettingsTapped)]];
+    [group addArrangedSubview:[self simulationRowWithIcon:@"ᛒ" titleKey:@"sim.ble.title"
+                                                subtitleKey:@"sim.ble.subtitle" action:@selector(bleSettingsTapped)]];
+    return group;
+}
+
+- (UIView *)simulationRowWithIcon:(NSString *)icon titleKey:(NSString *)titleKey
+                      subtitleKey:(NSString *)subtitleKey action:(SEL)action {
+    UIView *row = [[UIView alloc] initWithFrame:CGRectZero];
+    UILabel *iconLabel = [self themedLabel:18.0 weight:UIFontWeightRegular color:GPSLabThemeTextColor()];
+    iconLabel.text = icon;
+    iconLabel.textAlignment = NSTextAlignmentCenter;
+    iconLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    iconLabel.backgroundColor = GPSLabColorFromHex(0x101014);
+    iconLabel.layer.cornerRadius = 12.0;
+    iconLabel.layer.masksToBounds = YES;
+    iconLabel.layer.borderWidth = 0.5;
+    iconLabel.layer.borderColor = GPSLabThemeBorderColor().CGColor;
+    UILabel *title = [self themedLabel:16.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
+    title.accessibilityIdentifier = titleKey;
+    title.text = GPSLabLocalized(titleKey);
+    UILabel *subtitle = [self themedLabel:12.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    subtitle.accessibilityIdentifier = subtitleKey;
+    subtitle.text = GPSLabLocalized(subtitleKey);
+    UIStackView *texts = [[UIStackView alloc] initWithArrangedSubviews:@[ title, subtitle ]];
+    texts.axis = UILayoutConstraintAxisVertical;
+    texts.spacing = 3.0;
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    [button setTitle:GPSLabLocalized(@"sim.configure") forState:UIControlStateNormal];
+    button.titleLabel.font = GPSLabThemeFont(13.0, UIFontWeightSemibold);
+    button.accessibilityIdentifier = @"sim.configure";
+    [button setTitleColor:GPSLabThemeAccentSoftColor() forState:UIControlStateNormal];
+    button.backgroundColor = GPSLabColorFromHex(0x17171D);
+    button.layer.cornerRadius = 11.0;
+    button.layer.borderWidth = 0.5;
+    button.layer.borderColor = [GPSLabThemeAccentColor() colorWithAlphaComponent:0.35].CGColor;
+    button.contentEdgeInsets = UIEdgeInsetsMake(8.0, 10.0, 8.0, 10.0);
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [texts setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+
+    [row addSubview:iconLabel];
+    [row addSubview:texts];
+    [row addSubview:button];
+    iconLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    texts.translatesAutoresizingMaskIntoConstraints = NO;
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [NSLayoutConstraint activateConstraints:@[
+        [iconLabel.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
+        [iconLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [iconLabel.widthAnchor constraintEqualToConstant:38.0],
+        [iconLabel.heightAnchor constraintEqualToConstant:38.0],
+        [texts.leadingAnchor constraintEqualToAnchor:iconLabel.trailingAnchor constant:10.0],
+        [texts.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [button.leadingAnchor constraintGreaterThanOrEqualToAnchor:texts.trailingAnchor constant:10.0],
+        [button.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+        [button.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [row.topAnchor constraintEqualToAnchor:iconLabel.topAnchor constant:-10.0],
+        [row.bottomAnchor constraintEqualToAnchor:iconLabel.bottomAnchor constant:10.0],
+    ]];
+    return row;
+}
+
+- (UIView *)actionsView {
+    self.cancelButton = [self actionButtonWithKey:@"common.cancel" gradient:NO action:@selector(cancelTapped)];
+    self.applyButton = [self actionButtonWithKey:@"panel.actions.apply" gradient:YES action:@selector(applyTapped)];
+    UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[ self.cancelButton, self.applyButton ]];
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.distribution = UIStackViewDistributionFillEqually;
+    row.spacing = 12.0;
+    return row;
+}
+
+- (UIButton *)actionButtonWithKey:(NSString *)key gradient:(BOOL)gradient action:(SEL)action {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    [button setTitle:GPSLabLocalized(key) forState:UIControlStateNormal];
+    [button setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    button.titleLabel.font = GPSLabThemeFont(17.0, UIFontWeightBold);
+    button.layer.cornerRadius = 16.0;
+    button.layer.masksToBounds = YES;
+    if (gradient) {
+        CAGradientLayer *layer = GPSLabThemeAccentGradient();
+        layer.frame = CGRectMake(0.0, 0.0, 220.0, 52.0);
+        [button.layer insertSublayer:layer atIndex:0];
+    } else {
+        button.backgroundColor = GPSLabColorFromHex(0x2B2B30);
     }
-    self.pickBannerLabel.text = (self.pickMode == GPSLabMapPickModeRouteStart)
-        ? GPSLabLocalized(@"overlay.pick.start")
-        : GPSLabLocalized(@"overlay.pick.end");
-    self.pickBanner.hidden = NO;
+    button.contentEdgeInsets = UIEdgeInsetsMake(15.0, 15.0, 15.0, 15.0);
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return button;
 }
 
-- (void)beginPickingRouteStart {
-    self.pickMode = GPSLabMapPickModeRouteStart;
-    [self updatePickBanner];
+- (UIView *)subscriptionCardView {
+    self.subscriptionCard = [[UIView alloc] initWithFrame:CGRectZero];
+    self.subscriptionCard.backgroundColor = UIColor.clearColor;
+    self.subscriptionTitleLabel = [self themedLabel:17.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
+    self.subscriptionStatusLabel = [self themedLabel:12.0 weight:UIFontWeightBold color:GPSLabThemeGreenColor()];
+    self.subscriptionStatusLabel.textAlignment = NSTextAlignmentCenter;
+    self.subscriptionStatusLabel.layer.cornerRadius = 999.0;
+    self.subscriptionStatusLabel.layer.masksToBounds = YES;    UIStackView *head = [[UIStackView alloc] initWithArrangedSubviews:@[ self.subscriptionTitleLabel, [UIView new], self.subscriptionStatusLabel ]];
+    head.axis = UILayoutConstraintAxisHorizontal;
+    head.alignment = UIStackViewAlignmentCenter;
+    head.spacing = 12.0;
+
+    self.subscriptionPlanCaption = [self themedLabel:12.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    self.subscriptionPlanValue = [self themedLabel:15.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
+    self.subscriptionExpiryCaption = [self themedLabel:12.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    self.subscriptionExpiryValue = [self themedLabel:15.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
+    UIStackView *plan = [self subscriptionCellWithCaption:self.subscriptionPlanCaption value:self.subscriptionPlanValue];
+    UIStackView *expiry = [self subscriptionCellWithCaption:self.subscriptionExpiryCaption value:self.subscriptionExpiryValue];
+    UIStackView *grid = [[UIStackView alloc] initWithArrangedSubviews:@[ plan, expiry ]];
+    grid.axis = UILayoutConstraintAxisHorizontal;
+    grid.distribution = UIStackViewDistributionFillEqually;
+    grid.spacing = 8.0;
+
+    self.installationLabel = [self themedLabel:11.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    self.installationLabel.numberOfLines = 2;
+    self.installationLabel.textAlignment = NSTextAlignmentCenter;
+    [GPSLabLocalization forceLeftToRight:self.installationLabel];
+
+    UIStackView *column = [[UIStackView alloc] initWithArrangedSubviews:@[ head, grid, self.installationLabel ]];
+    column.axis = UILayoutConstraintAxisVertical;
+    column.spacing = 10.0;
+    column.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.subscriptionCard addSubview:column];
+    [NSLayoutConstraint activateConstraints:@[
+        [column.topAnchor constraintEqualToAnchor:self.subscriptionCard.topAnchor constant:14.0],
+        [column.bottomAnchor constraintEqualToAnchor:self.subscriptionCard.bottomAnchor constant:-4.0],
+        [column.leadingAnchor constraintEqualToAnchor:self.subscriptionCard.leadingAnchor],
+        [column.trailingAnchor constraintEqualToAnchor:self.subscriptionCard.trailingAnchor],
+    ]];
+    return self.subscriptionCard;
 }
 
-- (void)beginPickingRouteEnd {
-    self.pickMode = GPSLabMapPickModeRouteEnd;
-    [self updatePickBanner];
-}
-
-- (void)endPickMode {
-    self.pickMode = GPSLabMapPickModeNone;
-    [self updatePickBanner];
-}
-
-- (void)cancelPicking {
-    self.reopenRouteAfterPick = NO;
-    [self endPickMode];
+- (UIStackView *)subscriptionCellWithCaption:(UILabel *)caption value:(UILabel *)value {
+    UIView *box = [[UIView alloc] initWithFrame:CGRectZero];
+    box.backgroundColor = GPSLabColorFromHex(0x0F0F12);
+    box.layer.cornerRadius = 12.0;
+    UIStackView *cell = [[UIStackView alloc] initWithArrangedSubviews:@[ caption, value ]];
+    cell.axis = UILayoutConstraintAxisVertical;
+    cell.spacing = 4.0;
+    cell.translatesAutoresizingMaskIntoConstraints = NO;
+    [box addSubview:cell];
+    [NSLayoutConstraint activateConstraints:@[
+        [cell.topAnchor constraintEqualToAnchor:box.topAnchor constant:10.0],
+        [cell.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-10.0],
+        [cell.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:10.0],
+        [cell.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-10.0],
+    ]];
+    UIStackView *wrapper = [[UIStackView alloc] initWithArrangedSubviews:@[ box ]];
+    wrapper.axis = UILayoutConstraintAxisVertical;
+    return wrapper;
 }
 
 #pragma mark - Configuration into UI
 
 - (void)loadConfigurationIntoUI {
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
-    self.enabledSwitch.on = configuration.enabled;
-    self.mapStyle = GPSLabMapStyleStandard;
+    self.driftSwitch.on = configuration.driftEnabled;
+    self.keepLastSwitch.on = configuration.keepLastCoordinate;
+    self.routeSpeedSlider.value = configuration.routeCustomSpeedKmh > 0.0 ? configuration.routeCustomSpeedKmh : 50.0;
+    self.routeModeSegment.selectedSegmentIndex = (NSInteger)configuration.routeMode;
+    self.routeStopBehaviorSegment.selectedSegmentIndex = (NSInteger)configuration.stopBehavior;
     [self applyMapStyle:self.mapStyle];
     [self updateStatusLabel];
     [self updateMapFromState];
+    [self updateMasterAppearance];
+    [self updateRouteControls];
+    [self updateSubscriptionCard];
 }
 
 - (void)applyMapStyle:(NSInteger)style {
@@ -608,7 +1175,6 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
             case GPSLabMapStyleSatellite:
                 self.mapView.preferredConfiguration = [[MKImageryMapConfiguration alloc] init];
                 break;
-            case GPSLabMapStyleStandard:
             default: {
                 MKStandardMapConfiguration *standard = [[MKStandardMapConfiguration alloc] init];
                 standard.emphasisStyle = MKStandardMapEmphasisStyleDefault;
@@ -622,44 +1188,6 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 #pragma mark - Localization
 
-- (BOOL)isSearchActive {
-    return GPSLabSearchSessionIsActive(&_searchSession);
-}
-
-- (BOOL)isSearchSessionActive {
-    // The child results controller is not a UIKit modal, so there is no
-    // dismissing phase: the session is active until it is explicitly ended.
-    return GPSLabSearchSessionIsActive(&_searchSession);
-}
-
-- (void)endActiveSearch {
-    BOOL wasActive = GPSLabSearchSessionIsActive(&_searchSession);
-
-    // Reset session state and hide the child BEFORE resuming any deferred
-    // presentation, so the coordinator sees an inactive canvas.
-    [self.searchBar resignFirstResponder];
-    [self setSearchResultsVisible:NO];
-    [self.searchResultsController cancelActiveSearch];
-    [self.searchResultsController endSearchSession];
-    GPSLabSearchSessionEnd(&_searchSession);
-    self.searchBar.text = @"";
-    self.searchBar.showsCancelButton = NO;
-
-    if (wasActive) {
-        [self scheduleResolvePendingPresentation];
-    }
-}
-
-// The coordinator's drain is non-reentrant. The child results controller has no
-// UIKit modal transition, so the resume runs on the next main-queue turn: this
-// can never nest inside the coordinator's current defer branch and lose the
-// bounded pending presentation.
-- (void)scheduleResolvePendingPresentation {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [[GPSLabModalCoordinator sharedCoordinator] resolvePendingPresentation];
-    });
-}
-
 - (void)languageDidChange:(NSNotification *)notification {
     (void)notification;
     [self applyLocalization];
@@ -668,84 +1196,111 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 - (void)applyLocalization {
     UIView *scope = self.view.window ?: self.view;
     [GPSLabLocalization applyLanguageAttributesToView:scope];
-    // Geography and numeric content stay LTR; the map is never physically mirrored.
     [GPSLabLocalization forceLeftToRight:self.mapView];
-    [GPSLabLocalization forceLeftToRight:self.statusLabel];
+    [GPSLabLocalization forceLeftToRight:self.coordsBigLabel];
+    [GPSLabLocalization forceLeftToRight:self.headingValueLabel];
+    for (UILabel *label in self.coordValueLabels) {
+        [GPSLabLocalization forceLeftToRight:label];
+    }
 
-    self.titleLabel.text = GPSLabLocalized(@"overlay.title");
-    self.enabledLabel.text = GPSLabLocalized(@"overlay.enabled");
-    self.enabledSwitch.accessibilityLabel = GPSLabLocalized(@"overlay.enabled");
+    self.languageButton.accessibilityLabel = GPSLabLocalized(@"overlay.accessibility.language");
+    [self.languageButton setTitle:([GPSLabLocalization currentLanguage] == GPSLabLanguageEnglish) ? @"AR" : @"EN"
+                         forState:UIControlStateNormal];
+    self.infoButton.accessibilityLabel = GPSLabLocalized(@"overlay.info");
+    self.headerTitleLabel.text = GPSLabLocalized(@"overlay.title");
+    self.headerSubtitleLabel.text = GPSLabLocalized(@"overlay.subtitle");
+    self.closeButton.accessibilityLabel = GPSLabLocalized(@"common.close");
+    [self updateMasterAppearance];
+
     self.searchBar.placeholder = GPSLabLocalized(@"overlay.search.placeholder");
     self.searchBar.accessibilityLabel = GPSLabLocalized(@"overlay.search.placeholder");
-    [self.pickCancelButton setTitle:GPSLabLocalized(@"common.cancel") forState:UIControlStateNormal];
 
-    self.headerSettingsButton.accessibilityLabel = GPSLabLocalized(@"overlay.accessibility.settings");
-    self.headerCloseButton.accessibilityLabel = GPSLabLocalized(@"common.close");
-    NSArray<NSString *> *controlKeys = @[
-        @"overlay.accessibility.center",
-        @"overlay.accessibility.favorites",
-        @"overlay.accessibility.route",
-        @"overlay.accessibility.settings",
-    ];
-    NSUInteger controlCount = MIN(self.controlButtons.count, controlKeys.count);
-    for (NSUInteger index = 0; index < controlCount; index++) {
-        self.controlButtons[index].accessibilityLabel = GPSLabLocalized(controlKeys[index]);
-    }
+    [self.mapFavoritesSegment setTitle:GPSLabLocalized(@"panel.tab.map") forSegmentAtIndex:0];
+    [self.mapFavoritesSegment setTitle:GPSLabLocalized(@"panel.tab.favorites") forSegmentAtIndex:1];
+    [self.staticRouteSegment setTitle:GPSLabLocalized(@"panel.tab.static") forSegmentAtIndex:0];
+    [self.staticRouteSegment setTitle:GPSLabLocalized(@"panel.tab.route") forSegmentAtIndex:1];
+    self.coordsTitleLabel.text = GPSLabLocalized(@"panel.coords.title");
 
-    self.syntheticAnnotation.title = GPSLabLocalized(@"overlay.annotation.synthetic");
-    if (self.realLocationAnnotation != nil) {
-        self.realLocationAnnotation.title = GPSLabLocalized(@"overlay.annotation.real");
+    for (UIView *view in self.bodyStack.arrangedSubviews) {
+        [self localizeSubtree:view];
     }
-    if (self.routeStartPin != nil) {
-        self.routeStartPin.title = GPSLabLocalized(@"route.annotation.start");
-    }
-    if (self.routeEndPin != nil) {
-        self.routeEndPin.title = GPSLabLocalized(@"route.annotation.end");
-    }
+    [self.routeModeSegment setTitle:GPSLabLocalized(@"route.mode.driving") forSegmentAtIndex:0];
+    [self.routeModeSegment setTitle:GPSLabLocalized(@"route.mode.walking") forSegmentAtIndex:1];
+    [self.routeModeSegment setTitle:GPSLabLocalized(@"route.mode.cycling") forSegmentAtIndex:2];
+    [self.routeModeSegment setTitle:GPSLabLocalized(@"route.mode.custom") forSegmentAtIndex:3];
+    [self.routeStopBehaviorSegment setTitle:GPSLabLocalized(@"route.stop.stay") forSegmentAtIndex:0];
+    [self.routeStopBehaviorSegment setTitle:GPSLabLocalized(@"route.stop.return") forSegmentAtIndex:1];
+    [self.routePlayButton setTitle:GPSLabLocalized(@"route.start") forState:UIControlStateNormal];
+    [self.routeStopButton setTitle:GPSLabLocalized(@"route.stop") forState:UIControlStateNormal];
+    [self.cancelButton setTitle:GPSLabLocalized(@"common.cancel") forState:UIControlStateNormal];
+    [self.applyButton setTitle:GPSLabLocalized(@"panel.actions.apply") forState:UIControlStateNormal];
 
+    self.subscriptionTitleLabel.text = GPSLabLocalized(@"subscription.compact.title");
+    self.subscriptionPlanCaption.text = GPSLabLocalized(@"subscription.compact.plan");
+    self.subscriptionExpiryCaption.text = GPSLabLocalized(@"subscription.compact.expiry");
+    self.installationLabel.text = [NSString stringWithFormat:@"%@\n%@",
+                                   GPSLabLocalized(@"subscription.compact.installation"),
+                                   [self installationIdentifierDisplay]];
+    [self updateSubscriptionCard];
+    [self.profilesPanel applyLocalization];
+    [self updateScheduleDisplay:[self selectedProfile].schedule];
+    [self updateFavoritesList];
+}
+
+- (void)localizeSubtree:(UIView *)view {
+    if (view.accessibilityIdentifier.length > 0) {
+        NSString *key = view.accessibilityIdentifier;
+        if ([view isKindOfClass:[UILabel class]]) {
+            ((UILabel *)view).text = GPSLabLocalized(key);
+        } else if ([view isKindOfClass:[UIButton class]]) {
+            [(UIButton *)view setTitle:GPSLabLocalized(key) forState:UIControlStateNormal];
+        }
+    }
+    for (UIView *sub in view.subviews) {
+        [self localizeSubtree:sub];
+    }
+}
+
+#pragma mark - Master / actions
+
+- (void)updateMasterAppearance {
+    BOOL enabled = [GPSLabEngine sharedEngine].isEnabled;
+    self.masterDot.backgroundColor = enabled ? GPSLabThemeGreenColor() : GPSLabThemeRedColor();
+    self.masterDot.layer.shadowColor = (enabled ? GPSLabThemeGreenColor() : GPSLabThemeRedColor()).CGColor;
+    self.masterDot.layer.shadowOpacity = 0.75;
+    self.masterDot.layer.shadowRadius = 6.0;
+    self.masterDot.layer.shadowOffset = CGSizeZero;
+    self.masterButton.accessibilityLabel = enabled ? GPSLabLocalized(@"overlay.accessibility.master.enabled")
+                                                  : GPSLabLocalized(@"overlay.accessibility.master.disabled");
+    self.masterButton.accessibilityHint = GPSLabLocalized(@"overlay.enabled");
     [self updateStatusLabel];
-    [self updatePickBanner];
 }
 
-#pragma mark - Outside tap (hide keyboard only)
-
-- (void)installOutsideTapRecognizer {
-    if (self.outsideTapRecognizer != nil) {
-        return;
+- (void)masterTapped {
+    BOOL next = ![GPSLabEngine sharedEngine].isEnabled;
+    if (!next) {
+        [[GPSLabScheduler sharedScheduler] noteManualEngineDisable];
     }
-    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self
-                                                                          action:@selector(outsideTapped:)];
-    tap.delegate = self;
-    // Observe without consuming: map taps/pan/zoom and controls keep working.
-    tap.cancelsTouchesInView = NO;
-    tap.delaysTouchesBegan = NO;
-    tap.delaysTouchesEnded = NO;
-    [self.view addGestureRecognizer:tap];
-    self.outsideTapRecognizer = tap;
+    [[GPSLabEngine sharedEngine] setEnabledAndNotify:next];
+    [GPSLabStatusLog append:(next ? GPSLabLocalized(@"overlay.engine.enabled")
+                                  : GPSLabLocalized(@"overlay.engine.disabled"))];
+    [self updateMasterAppearance];
 }
 
-- (void)outsideTapped:(UITapGestureRecognizer *)recognizer {
-    if (recognizer.state != UIGestureRecognizerStateEnded) {
-        return;
-    }
-    [self endActiveSearch];
-}
-
-#pragma mark - Actions
-
-- (void)closeTapped {
-    [[GPSLabOverlayPresenter sharedPresenter] dismissOverlay];
-}
-
-- (void)settingsTapped {
+- (void)infoTapped {
     [self presentOptionsSheet];
 }
 
-- (void)enabledChanged {
-    [[GPSLabEngine sharedEngine] setEnabledAndNotify:self.enabledSwitch.on];
-    [GPSLabStatusLog append:(self.enabledSwitch.on ? GPSLabLocalized(@"overlay.engine.enabled")
-                                                   : GPSLabLocalized(@"overlay.engine.disabled"))];
-    [self updateStatusLabel];
+- (void)languageTapped {
+    GPSLabLanguageCode next = ([GPSLabLocalization currentLanguage] == GPSLabLanguageEnglish)
+        ? GPSLabLanguageArabic : GPSLabLanguageEnglish;
+    [GPSLabLocalization setLanguage:next];
+}
+
+- (void)closeTapped {
+    [[GPSLabScheduler sharedScheduler] cancelPending];
+    [[GPSLabProfileApplicationCoordinator sharedCoordinator] cancelPendingApplication];
+    [[GPSLabOverlayPresenter sharedPresenter] dismissOverlay];
 }
 
 - (void)centerTapped {
@@ -753,76 +1308,369 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(coordinate, 800.0, 800.0) animated:YES];
 }
 
-- (void)favoritesTapped {
-    [self presentFavoritesSheet];
+- (void)bookmarkTapped {
+    GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
+    GPSLabBookmark *bookmark = [GPSLabBookmark bookmarkWithName:GPSLabLocalized(@"favorites.defaultName")
+                                                      coordinate:configuration.coordinate
+                                                        altitude:configuration.altitude];
+    [[GPSLabStore sharedStore] addBookmark:bookmark];
+    [GPSLabStatusLog append:GPSLabLocalized(@"profiles.ready")];
+    [self updateFavoritesList];
 }
 
-- (void)routeTapped {
-    [self presentRouteSheet];
+- (void)mapFavoritesChanged {
+    [self updateTabVisibility];
 }
 
-#pragma mark - Search
+- (void)staticRouteChanged {
+    [self updateTabVisibility];
+}
 
-- (BOOL)searchBarShouldBeginEditing:(UISearchBar *)searchBar {
-    (void)searchBar;
-    // Acquire the key-window lease BEFORE the field becomes first responder so
-    // the keyboard session is owned by the GPSLab window, not the host.
-    [[GPSLabOverlayPresenter sharedPresenter] acquireKeyLease];
+- (void)updateTabVisibility {
+    BOOL favorites = self.mapFavoritesSegment.selectedSegmentIndex == 1;
+    self.mapCard.hidden = favorites;
+    self.favoritesCard.hidden = !favorites;
+    self.routeSection.hidden = self.staticRouteSegment.selectedSegmentIndex != 1;
+    if (favorites) {
+        [self updateFavoritesList];
+    }
+}
+
+- (void)driftChanged {
+    [[GPSLabEngine sharedEngine] setDriftEnabled:self.driftSwitch.on];
+    [[GPSLabEngine sharedEngine] setDriftRadiusMeters:[[GPSLabEngine sharedEngine] driftRadiusMeters]];
+    [self updateStatusLabel];
+}
+
+- (void)keepLastChanged {
+    [[GPSLabEngine sharedEngine] setKeepLastCoordinate:self.keepLastSwitch.on];
+}
+
+- (void)realLocationChanged {
+    [self setRealLocationDisplayEnabled:self.realLocationSwitch.on];
+}
+
+- (void)scheduleTapped {
+    GPSLabProfile *selected = [self selectedProfile];
+    GPSLabScheduleViewController *sheet = [[GPSLabScheduleViewController alloc] init];
+    sheet.schedule = selected.schedule;
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    sheet.saveHandler = ^BOOL(GPSLabProfileSchedule * _Nullable schedule) {
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return NO;
+        }
+        return [strongSelf attachSchedule:schedule];
+    };
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:sheet completion:nil];
+}
+
+- (BOOL)attachSchedule:(nullable GPSLabProfileSchedule *)schedule {
+    GPSLabProfile *selected = [self selectedProfile];
+    if (selected == nil) {
+        // No profile selected: reflect the change on the live candidate only.
+        [self updateScheduleDisplay:schedule];
+        return YES;
+    }
+    GPSLabProfile *updated = [selected profileWithWiFi:selected.wifi bluetooth:selected.bluetooth schedule:schedule];
+    NSError *error = nil;
+    if (![[GPSLabProfileStore sharedStore] updateProfile:updated error:&error]) {
+        [self presentErrorKey:@"profiles.error.save"];
+        return NO;
+    }
+    self.selectedProfileIdentifier = updated.identifier;
+    [self reloadProfiles];
+    [self rearmAppliedProfileIfNeeded:updated];
     return YES;
 }
 
-- (void)searchBarTextDidBeginEditing:(UISearchBar *)searchBar {
-    // The bar is a standalone GPSLab view; activation only starts the session
-    // and reveals the bounded child results panel below it. The bar and the
-    // first responder are never re-added or replaced.
-    if (!GPSLabSearchSessionIsActive(&_searchSession)) {
-        GPSLabSearchSessionBegin(&_searchSession);
-    }
-    searchBar.showsCancelButton = YES;
-    [self setSearchResultsVisible:YES];
-    [self.searchResultsController updateSearchResultsForQuery:searchBar.text ?: @""];
-}
-
-- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
-    (void)searchBar;
-    // Only a live session may drive results: a late callback after Cancel must
-    // not resurrect the search phase.
-    if (!GPSLabSearchSessionIsActive(&_searchSession)) {
+- (void)updateScheduleDisplay:(nullable GPSLabProfileSchedule *)schedule {
+    if (schedule == nil) {
+        [self.scheduleButton setTitle:GPSLabLocalized(@"panel.schedule.none") forState:UIControlStateNormal];
         return;
     }
-    [self.searchResultsController updateSearchResultsForQuery:searchText ?: @""];
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.dateStyle = NSDateFormatterShortStyle;
+    formatter.timeStyle = NSDateFormatterShortStyle;
+    NSDate *date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)schedule.startEpoch];
+    [self.scheduleButton setTitle:[formatter stringFromDate:date] forState:UIControlStateNormal];
 }
 
-- (void)searchBarTextDidEndEditing:(UISearchBar *)searchBar {
-    // Keep Cancel visible for the whole session: resigning the keyboard (e.g.
-    // the Search key) must not remove the only escape while results are shown.
-    searchBar.showsCancelButton = GPSLabSearchSessionIsActive(&_searchSession) ? YES : NO;
-}
-
-- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
-    // Explicit Search key: commit the session (only while editing), refresh the
-    // query, then resign the keyboard. The bar, Cancel and results stay on
-    // screen.
-    if (GPSLabSearchSessionCanCommit(&_searchSession)) {
-        GPSLabSearchSessionCommit(&_searchSession);
+- (void)applyTapped {
+    if (self.staticRouteSegment.selectedSegmentIndex == 1) {
+        [self startRouteFromPending];
+        return;
     }
-    if (GPSLabSearchSessionIsActive(&_searchSession)) {
-        [self.searchResultsController updateSearchResultsForQuery:searchBar.text ?: @""];
-    }
-    [searchBar resignFirstResponder];
-}
-
-- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
-    (void)searchBar;
+    GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
+    [self applyCoordinate:configuration.coordinate altitude:configuration.altitude heading:configuration.heading];
     [self endActiveSearch];
 }
 
-- (void)applyMapItem:(MKMapItem *)item {
-    if (item == nil) {
+- (void)cancelTapped {
+    [self endActiveSearch];
+    [self loadConfigurationIntoUI];
+    [self updateTabVisibility];
+}
+
+#pragma mark - Profiles
+
+- (void)reloadProfiles {
+    GPSLabProfileStore *store = [GPSLabProfileStore sharedStore];
+    self.profiles = [store loadProfiles];
+    NSString *selected = [store selectedProfileIdentifier];
+    if (selected == nil && self.profiles.count > 0) {
+        selected = self.selectedProfileIdentifier ?: self.profiles.firstObject.identifier;
+    }
+    if (selected.length > 0 && ![self profileWithIdentifier:selected]) {
+        selected = self.profiles.firstObject.identifier;
+    }
+    self.selectedProfileIdentifier = selected;
+    [self.profilesPanel setProfiles:self.profiles selectedIdentifier:selected];
+    [self updateScheduleDisplay:[self selectedProfile].schedule];
+}
+
+- (GPSLabProfile *)profileWithIdentifier:(NSString *)identifier {
+    for (GPSLabProfile *profile in self.profiles) {
+        if ([profile.identifier isEqualToString:identifier]) {
+            return profile;
+        }
+    }
+    return nil;
+}
+
+- (GPSLabProfile *)selectedProfile {
+    if (self.selectedProfileIdentifier.length > 0) {
+        return [self profileWithIdentifier:self.selectedProfileIdentifier];
+    }
+    return self.profiles.firstObject;
+}
+
+- (GPSLabProfile *)candidateProfileFromCurrentState {
+    GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
+    GPSLabProfileRoute *route = nil;
+    if (self.pendingRouteStartItem != nil && self.pendingRouteEndItem != nil) {
+        route = [[GPSLabProfileRoute alloc] initWithStartLatitude:self.pendingRouteStartItem.placemark.coordinate.latitude
+                                                  startLongitude:self.pendingRouteStartItem.placemark.coordinate.longitude
+                                                    endLatitude:self.pendingRouteEndItem.placemark.coordinate.latitude
+                                                  endLongitude:self.pendingRouteEndItem.placemark.coordinate.longitude
+                                                        altitude:configuration.altitude
+                                                         heading:configuration.heading
+                                                            mode:(GPSLabRouteMode)self.routeModeSegment.selectedSegmentIndex
+                                                  customSpeedKmh:self.routeSpeedSlider.value];
+    }
+    return [[GPSLabProfile alloc] initWithIdentifier:[[NSUUID UUID] UUIDString]
+                                                name:@""
+                                        locationMode:(route != nil ? GPSLabProfileLocationRoute
+                                                                   : GPSLabProfileLocationStatic)
+                                           latitude:configuration.latitude
+                                          longitude:configuration.longitude
+                                           altitude:configuration.altitude
+                                            heading:configuration.heading
+                                       driftEnabled:configuration.driftEnabled
+                                  driftRadiusMeters:configuration.driftRadiusMeters
+                                              route:route
+                                               wifi:nil
+                                          bluetooth:nil
+                                           schedule:[self selectedProfile].schedule];
+}
+
+- (void)presentProfileFormForProfile:(nullable GPSLabProfile *)profile {
+    GPSLabProfileFormViewController *form = [[GPSLabProfileFormViewController alloc] init];
+    form.existingProfile = profile;
+    form.candidateProfile = profile ?: [self candidateProfileFromCurrentState];
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    form.saveHandler = ^BOOL(GPSLabProfile *saved) {
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return NO;
+        }
+        return [strongSelf saveProfileFromForm:saved editing:(profile != nil)];
+    };
+    form.deleteHandler = ^{
+        [weakSelf deleteProfile:profile];
+    };
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:form completion:nil];
+}
+
+- (BOOL)saveProfileFromForm:(GPSLabProfile *)profile editing:(BOOL)editing {
+    GPSLabProfileStore *store = [GPSLabProfileStore sharedStore];
+    NSError *error = nil;
+    BOOL success = editing ? [store updateProfile:profile error:&error]
+                           : [store addProfile:profile error:&error];
+    if (!success) {
+        [self presentErrorKey:(error.code == GPSLabProfileStoreErrorCapacity
+                              ? @"profiles.error.capacity" : @"profiles.error.save")];
+        return NO;
+    }
+    self.selectedProfileIdentifier = profile.identifier;
+    [store setSelectedProfileIdentifier:profile.identifier error:NULL];
+    [self reloadProfiles];
+    [self rearmAppliedProfileIfNeeded:profile];
+    return YES;
+}
+
+- (void)deleteProfile:(nullable GPSLabProfile *)profile {
+    if (profile == nil) {
         return;
     }
-    [self applyCoordinate:item.placemark.coordinate altitude:[[GPSLabEngine sharedEngine] configuration].altitude];
-    [self endActiveSearch];
+    GPSLabProfileStore *store = [GPSLabProfileStore sharedStore];
+    NSError *error = nil;
+    if (![store deleteProfileWithIdentifier:profile.identifier error:&error]) {
+        [self presentErrorKey:@"profiles.error.notFound"];
+        return;
+    }
+    if ([self.appliedProfileIdentifier isEqualToString:profile.identifier]) {
+        self.appliedProfileIdentifier = nil;
+        [[GPSLabScheduler sharedScheduler] cancelPending];
+        [[GPSLabProfileApplicationCoordinator sharedCoordinator] invalidateAppliedProfile];
+    }
+    self.selectedProfileIdentifier = nil;
+    [self reloadProfiles];
+}
+
+- (void)selectProfile:(GPSLabProfile *)profile {
+    // Browsing a chip is not an application: it must not disturb a running route
+    // or a pending schedule.
+    self.selectedProfileIdentifier = profile.identifier;
+    [[GPSLabProfileStore sharedStore] setSelectedProfileIdentifier:profile.identifier error:NULL];
+    [self.profilesPanel setProfiles:self.profiles selectedIdentifier:profile.identifier];
+    [self updateScheduleDisplay:profile.schedule];
+}
+
+- (void)applyProfile:(GPSLabProfile *)profile {
+    GPSLabProfileApplicationCoordinator *coordinator = [GPSLabProfileApplicationCoordinator sharedCoordinator];
+    __weak GPSLabOverlayViewController *weakSelf = self;
+    [coordinator applyProfile:profile completion:^(GPSLabProfileApplicationResult *result) {
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        if (!result.applied) {
+            [strongSelf presentErrorKey:result.messageKey ?: @"profiles.error.invalid"];
+            return;
+        }
+        strongSelf.appliedProfileIdentifier = profile.identifier;
+        [[GPSLabScheduler sharedScheduler] armWithProfile:profile];
+        [strongSelf loadConfigurationIntoUI];
+        [strongSelf updateMapFromState];
+        [strongSelf scheduleBackgroundSnapshot];
+    }];
+}
+
+/** Re-arms the scheduler ONLY when the edited profile is the applied one. */
+- (void)rearmAppliedProfileIfNeeded:(GPSLabProfile *)profile {
+    if (profile == nil) {
+        return;
+    }
+    if ([profile.identifier isEqualToString:self.appliedProfileIdentifier ?: @""]) {
+        [[GPSLabScheduler sharedScheduler] cancelPending];
+        [[GPSLabScheduler sharedScheduler] armWithProfile:profile];
+    }
+}
+
+- (void)presentErrorKey:(NSString *)key {
+    NSString *message = GPSLabLocalized(key);
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:GPSLabLocalized(@"profiles.title")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:GPSLabLocalized(@"common.ok")
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [[GPSLabModalCoordinator sharedCoordinator] presentAlert:alert completion:nil];
+}
+
+- (void)updateFavoritesList {
+    for (UIView *view in self.favoritesList.arrangedSubviews) {
+        [view removeFromSuperview];
+    }
+    NSArray<GPSLabBookmark *> *bookmarks = [[GPSLabStore sharedStore] loadBookmarks];
+    if (bookmarks.count == 0) {
+        UILabel *empty = [self themedLabel:14.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+        empty.text = GPSLabLocalized(@"favorites.empty");
+        empty.numberOfLines = 0;
+        [self.favoritesList addArrangedSubview:empty];
+        return;
+    }
+    for (NSUInteger index = 0; index < bookmarks.count; index++) {
+        GPSLabBookmark *bookmark = bookmarks[index];
+        UIButton *row = [UIButton buttonWithType:UIButtonTypeSystem];
+        [row setTitle:[NSString stringWithFormat:@"%@  %@", bookmark.name,
+                       [GPSLabLocalization coordinateStringWithLatitude:bookmark.latitude
+                                                               longitude:bookmark.longitude]]
+             forState:UIControlStateNormal];
+        // Locale-aware: leading resolves to the right edge in Arabic RTL.
+        row.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeading;
+        row.titleLabel.font = GPSLabThemeFont(14.0, UIFontWeightMedium);
+        [row setTitleColor:GPSLabThemeTextColor() forState:UIControlStateNormal];
+        row.tag = (NSInteger)index;
+        [row addTarget:self action:@selector(favoriteTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [self.favoritesList addArrangedSubview:row];
+    }
+}
+
+- (void)favoriteTapped:(UIButton *)sender {
+    NSArray<GPSLabBookmark *> *bookmarks = [[GPSLabStore sharedStore] loadBookmarks];
+    if (sender.tag < 0 || (NSUInteger)sender.tag >= bookmarks.count) {
+        return;
+    }
+    GPSLabBookmark *bookmark = bookmarks[(NSUInteger)sender.tag];
+    [self applyCoordinate:CLLocationCoordinate2DMake(bookmark.latitude, bookmark.longitude)
+                 altitude:bookmark.altitude];
+    [self updateFavoritesList];
+}
+
+#pragma mark - Modules
+
+- (void)wifiSettingsTapped {
+    GPSLabProfile *selected = [self selectedProfile];
+    GPSLabSimulationSettingsViewController *sheet = [[GPSLabSimulationSettingsViewController alloc] init];
+    sheet.kind = GPSLabSimulationKindWiFi;
+    sheet.wifiConfig = selected.wifi;
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    sheet.saveWiFiHandler = ^BOOL(GPSLabProfileWiFiConfig *config) {
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return NO;
+        }
+        return [strongSelf attachWiFi:config bluetooth:nil];
+    };
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:sheet completion:nil];
+}
+
+- (void)bleSettingsTapped {
+    GPSLabProfile *selected = [self selectedProfile];
+    GPSLabSimulationSettingsViewController *sheet = [[GPSLabSimulationSettingsViewController alloc] init];
+    sheet.kind = GPSLabSimulationKindBluetooth;
+    sheet.bluetoothConfig = selected.bluetooth;
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    sheet.saveBluetoothHandler = ^BOOL(GPSLabProfileBluetoothConfig *config) {
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return NO;
+        }
+        return [strongSelf attachWiFi:nil bluetooth:config];
+    };
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:sheet completion:nil];
+}
+
+- (BOOL)attachWiFi:(nullable GPSLabProfileWiFiConfig *)wifi
+         bluetooth:(nullable GPSLabProfileBluetoothConfig *)bluetooth {
+    GPSLabProfile *selected = [self selectedProfile];
+    if (selected == nil) {
+        return NO;
+    }
+    GPSLabProfile *updated = [selected profileWithWiFi:wifi ?: selected.wifi
+                                             bluetooth:bluetooth ?: selected.bluetooth
+                                              schedule:selected.schedule];
+    NSError *error = nil;
+    if (![[GPSLabProfileStore sharedStore] updateProfile:updated error:&error]) {
+        [self presentErrorKey:@"profiles.error.save"];
+        return NO;
+    }
+    self.selectedProfileIdentifier = updated.identifier;
+    [self reloadProfiles];
+    [self rearmAppliedProfileIfNeeded:updated];
+    return YES;
 }
 
 #pragma mark - Sheet presentation
@@ -834,22 +1682,11 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     manual.initialLongitude = configuration.longitude;
     manual.initialAltitude = configuration.altitude;
     manual.initialHeading = configuration.heading;
-
     GPSLabOverlayViewController *__weak weakSelf = self;
     manual.applyHandler = ^(CLLocationCoordinate2D coordinate, double altitude, double heading) {
         [weakSelf applyCoordinate:coordinate altitude:altitude heading:heading];
     };
     [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:manual completion:nil];
-}
-
-- (void)presentFavoritesSheet {
-    GPSLabFavoritesViewController *favorites = [[GPSLabFavoritesViewController alloc] init];
-    GPSLabOverlayViewController *__weak weakSelf = self;
-    favorites.selectHandler = ^(GPSLabBookmark *bookmark) {
-        [weakSelf applyCoordinate:CLLocationCoordinate2DMake(bookmark.latitude, bookmark.longitude)
-                         altitude:bookmark.altitude];
-    };
-    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:favorites completion:nil];
 }
 
 - (void)presentRecentsSheet {
@@ -865,47 +1702,14 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     GPSLabFluctuationViewController *sheet = [[GPSLabFluctuationViewController alloc] init];
     sheet.fluctuationEnabled = [[GPSLabEngine sharedEngine] isDriftEnabled];
     sheet.radiusMeters = [[GPSLabEngine sharedEngine] driftRadiusMeters];
-
     GPSLabOverlayViewController *__weak weakSelf = self;
     sheet.changeHandler = ^(BOOL enabled, double radiusMeters) {
         [[GPSLabEngine sharedEngine] setDriftEnabled:enabled];
         [[GPSLabEngine sharedEngine] setDriftRadiusMeters:radiusMeters];
+        weakSelf.driftSwitch.on = enabled;
         [weakSelf updateStatusLabel];
     };
     [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:sheet completion:nil];
-}
-
-- (void)presentRouteSheet {
-    GPSLabRouteViewController *route = [[GPSLabRouteViewController alloc] init];
-    route.startItem = self.pendingRouteStartItem;
-    route.endItem = self.pendingRouteEndItem;
-
-    GPSLabOverlayViewController *__weak weakSelf = self;
-    route.pickStartHandler = ^{
-        [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:^{
-            GPSLabOverlayViewController *strongSelf = weakSelf;
-            if (strongSelf == nil) {
-                return;
-            }
-            strongSelf.reopenRouteAfterPick = YES;
-            [strongSelf beginPickingRouteStart];
-        }];
-    };
-    route.pickEndHandler = ^{
-        [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:^{
-            GPSLabOverlayViewController *strongSelf = weakSelf;
-            if (strongSelf == nil) {
-                return;
-            }
-            strongSelf.reopenRouteAfterPick = YES;
-            [strongSelf beginPickingRouteEnd];
-        }];
-    };
-    route.routeChangedHandler = ^{
-        [weakSelf updateRouteAnnotations];
-        [weakSelf updateStatusLabel];
-    };
-    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:route completion:nil];
 }
 
 - (void)presentOptionsSheet {
@@ -914,45 +1718,44 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     options.keepLastCoordinate = configuration.keepLastCoordinate;
     options.realLocationEnabled = self.realLocationDisplayEnabled;
     options.mapStyle = self.mapStyle;
-    // Active is silent; surface only a meaningful subscription status in settings.
+    options.engineEnabled = [GPSLabEngine sharedEngine].isEnabled;
     options.subscriptionStatusText = ([[GPSLabLicenseManager sharedManager] state] == GPSLabEntitlementStateGrace)
-        ? GPSLabLocalized(@"subscription.grace")
-        : nil;
-
+        ? GPSLabLocalized(@"subscription.grace") : nil;
     GPSLabOverlayViewController *__weak weakSelf = self;
     options.keepLastHandler = ^(BOOL keepLast) {
         [[GPSLabEngine sharedEngine] setKeepLastCoordinate:keepLast];
-        [weakSelf updateStatusLabel];
+        weakSelf.keepLastSwitch.on = keepLast;
     };
     options.realLocationHandler = ^(BOOL enabled) {
+        weakSelf.realLocationSwitch.on = enabled;
         [weakSelf setRealLocationDisplayEnabled:enabled];
     };
-    options.mapStyleHandler = ^(NSInteger style) {
-        [weakSelf applyMapStyle:style];
+    options.mapStyleHandler = ^(NSInteger style) { [weakSelf applyMapStyle:style]; };
+    options.engineEnabledHandler = ^(BOOL enabled) {
+        weakSelf.masterButton.enabled = YES;
+        if (!enabled) {
+            [[GPSLabScheduler sharedScheduler] noteManualEngineDisable];
+        }
+        [[GPSLabEngine sharedEngine] setEnabledAndNotify:enabled];
+        [weakSelf updateMasterAppearance];
     };
     options.manualEntryHandler = ^{
         GPSLabOverlayViewController *strongSelf = weakSelf;
-        if (strongSelf == nil) {
-            return;
-        }
+        if (strongSelf == nil) { return; }
         [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:^{
             [strongSelf presentManualEntrySheet];
         }];
     };
     options.recentsHandler = ^{
         GPSLabOverlayViewController *strongSelf = weakSelf;
-        if (strongSelf == nil) {
-            return;
-        }
+        if (strongSelf == nil) { return; }
         [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:^{
             [strongSelf presentRecentsSheet];
         }];
     };
     options.fluctuationHandler = ^{
         GPSLabOverlayViewController *strongSelf = weakSelf;
-        if (strongSelf == nil) {
-            return;
-        }
+        if (strongSelf == nil) { return; }
         [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:^{
             [strongSelf presentFluctuationSheet];
         }];
@@ -971,7 +1774,6 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     if (!GPSLabIsValidCoordinate(coordinate.latitude, coordinate.longitude)) {
         return;
     }
-
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
     configuration.latitude = coordinate.latitude;
     configuration.longitude = coordinate.longitude;
@@ -979,11 +1781,12 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     configuration.heading = GPSLabNormalizeHeading(heading);
     [[GPSLabEngine sharedEngine] applyConfiguration:configuration];
     [[GPSLabEngine sharedEngine] persistConfiguration];
-
     [[GPSLabStore sharedStore] addRecentCoordinate:coordinate altitude:configuration.altitude];
-
+    // A manual anchor change invalidates any scheduled ownership.
+    [[GPSLabProfileApplicationCoordinator sharedCoordinator] invalidateAppliedProfile];
     [self updateStatusLabel];
     [self updateMapFromState];
+    [self scheduleBackgroundSnapshot];
 }
 
 - (void)updateMapFromState {
@@ -991,12 +1794,131 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.syntheticAnnotation.coordinate = anchor;
 }
 
+#pragma mark - Route
+
+- (void)pickRouteStart {
+    self.reopenRouteAfterPick = NO;
+    self.pickMode = GPSLabMapPickModeRouteStart;
+    [self updatePickBanner];
+}
+
+- (void)pickRouteEnd {
+    self.reopenRouteAfterPick = NO;
+    self.pickMode = GPSLabMapPickModeRouteEnd;
+    [self updatePickBanner];
+}
+
+- (void)updatePickBanner {
+    if (self.pickMode == GPSLabMapPickModeNone) {
+        self.pickBannerLabel.hidden = YES;
+        return;
+    }
+    self.pickBannerLabel.text = (self.pickMode == GPSLabMapPickModeRouteStart)
+        ? GPSLabLocalized(@"overlay.pick.start") : GPSLabLocalized(@"overlay.pick.end");
+    self.pickBannerLabel.hidden = NO;
+}
+
+- (void)updateRouteControls {
+    self.routeStartLabel.text = (self.pendingRouteStartItem != nil)
+        ? [NSString stringWithFormat:GPSLabLocalized(@"route.startLabel.format"), self.pendingRouteStartItem.name]
+        : GPSLabLocalized(@"route.startLabel");
+    self.routeEndLabel.text = (self.pendingRouteEndItem != nil)
+        ? [NSString stringWithFormat:GPSLabLocalized(@"route.endLabel.format"), self.pendingRouteEndItem.name]
+        : GPSLabLocalized(@"route.endLabel");
+    GPSLabRouteState state = [[[GPSLabEngine sharedEngine] routeSimulator] state];
+    [self.routePlayButton setTitle:(state == GPSLabRouteStatePaused ? GPSLabLocalized(@"route.pauseResume")
+                                                                   : GPSLabLocalized(@"route.start"))
+                          forState:UIControlStateNormal];
+    self.routeSpeedValueLabel.text = [NSString stringWithFormat:@"%.0f km/h", self.routeSpeedSlider.value];
+}
+
+- (void)routeModeChanged {
+    GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
+    configuration.routeMode = (GPSLabRouteMode)self.routeModeSegment.selectedSegmentIndex;
+    [[GPSLabEngine sharedEngine] applyConfiguration:configuration];
+}
+
+- (void)routeSpeedChanged {
+    self.routeSpeedValueLabel.text = [NSString stringWithFormat:@"%.0f km/h", self.routeSpeedSlider.value];
+}
+
+- (void)routeStopBehaviorChanged {
+    GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
+    configuration.stopBehavior = (self.routeStopBehaviorSegment.selectedSegmentIndex == 1)
+        ? GPSLabStopBehaviorReturnToStart : GPSLabStopBehaviorStayAtCurrent;
+    [[GPSLabEngine sharedEngine] applyConfiguration:configuration];
+}
+
+- (void)routePlayTapped {
+    GPSLabRouteSimulator *simulator = [[GPSLabEngine sharedEngine] routeSimulator];
+    GPSLabRouteState state = [simulator state];
+    if (state == GPSLabRouteStatePaused) {
+        [[GPSLabEngine sharedEngine] resumeRoute];
+        [self updateRouteControls];
+        return;
+    }
+    if (state == GPSLabRouteStatePlaying) {
+        [[GPSLabEngine sharedEngine] pauseRoute];
+        [self updateRouteControls];
+        return;
+    }
+    [self startRouteFromPending];
+}
+
+- (void)routeStopTapped {
+    [[GPSLabProfileApplicationCoordinator sharedCoordinator] invalidateAppliedProfile];
+    [[GPSLabEngine sharedEngine] stopRoute];
+    [self updateRouteControls];
+    [self updateStatusLabel];
+}
+
+- (void)startRouteFromPending {
+    if (self.pendingRouteStartItem == nil || self.pendingRouteEndItem == nil) {
+        [self presentErrorKey:@"route.incomplete.message"];
+        return;
+    }
+    GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
+    configuration.routeMode = (GPSLabRouteMode)self.routeModeSegment.selectedSegmentIndex;
+    configuration.routeCustomSpeedKmh = self.routeSpeedSlider.value;
+    configuration.stopBehavior = (self.routeStopBehaviorSegment.selectedSegmentIndex == 1)
+        ? GPSLabStopBehaviorReturnToStart : GPSLabStopBehaviorStayAtCurrent;
+    [[GPSLabEngine sharedEngine] applyConfiguration:configuration];
+    // A manual route change invalidates any scheduled ownership.
+    [[GPSLabProfileApplicationCoordinator sharedCoordinator] invalidateAppliedProfile];
+
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    [[GPSLabEngine sharedEngine] startRouteFrom:self.pendingRouteStartItem.placemark.coordinate
+                                             to:self.pendingRouteEndItem.placemark.coordinate
+                                           mode:configuration.routeMode
+                                 customSpeedKmh:configuration.routeCustomSpeedKmh
+                                     completion:^(NSError * _Nullable error) {
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        if (error != nil) {
+            [strongSelf presentErrorKey:@"route.failed.title"];
+        }
+        [strongSelf updateRouteControls];
+    }];
+    [self updateRouteControls];
+}
+
 #pragma mark - Map gestures
+
+- (void)mapPanShield:(UIPanGestureRecognizer *)recognizer {
+    if (recognizer.state == UIGestureRecognizerStateBegan) {
+        self.bodyScrollView.scrollEnabled = NO;
+    } else if (recognizer.state == UIGestureRecognizerStateEnded ||
+               recognizer.state == UIGestureRecognizerStateCancelled ||
+               recognizer.state == UIGestureRecognizerStateFailed) {
+        self.bodyScrollView.scrollEnabled = YES;
+    }
+}
 
 - (void)mapTapped:(UITapGestureRecognizer *)recognizer {
     CGPoint point = [recognizer locationInView:self.mapView];
     CLLocationCoordinate2D coordinate = [self.mapView convertPoint:point toCoordinateFromView:self.mapView];
-
     if (self.pickMode != GPSLabMapPickModeNone) {
         [self handlePickAtCoordinate:coordinate];
         return;
@@ -1028,39 +1950,25 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         self.pendingRouteEndItem = item;
     }
     [self updateRouteAnnotations];
-
+    [self updateRouteControls];
     BOOL reopen = self.reopenRouteAfterPick;
     self.reopenRouteAfterPick = NO;
-    [self endPickMode];
-
+    self.pickMode = GPSLabMapPickModeNone;
+    [self updatePickBanner];
     if (reopen) {
-        [self presentRouteSheet];
+        // Route tab owns the controls now; nothing to re-present.
     }
 }
-
-- (void)annotationDragged:(UIPanGestureRecognizer *)recognizer {
-    CGPoint point = [recognizer locationInView:self.mapView];
-    CLLocationCoordinate2D coordinate = [self.mapView convertPoint:point toCoordinateFromView:self.mapView];
-    self.syntheticAnnotation.coordinate = coordinate;
-
-    if (recognizer.state == UIGestureRecognizerStateEnded ||
-        recognizer.state == UIGestureRecognizerStateCancelled) {
-        [self applyCoordinate:coordinate altitude:[[GPSLabEngine sharedEngine] configuration].altitude];
-    }
-}
-
-#pragma mark - UIGestureRecognizerDelegate
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
         shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)other {
-    // Our tap/long-press must never block MapKit pan, zoom, rotate or pitch.
+    (void)gestureRecognizer;
+    (void)other;
     return YES;
 }
 
-- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
-       shouldReceiveTouch:(UITouch *)touch {
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
     if (gestureRecognizer != self.outsideTapRecognizer) {
-        // Map tap/long-press observe touches exactly as before.
         return YES;
     }
     if (!self.isSearchSessionActive) {
@@ -1070,15 +1978,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     if (touchView == nil) {
         return NO;
     }
-    // The child results panel owns its table cells and Done button: a tap there
-    // must reach the table (selection / Done), never end the search first.
     GPSLabSearchResultsViewController *results = self.searchResultsController;
-    if (results != nil && results.isViewLoaded &&
-        [touchView isDescendantOfView:results.view]) {
+    if (results != nil && results.isViewLoaded && [touchView isDescendantOfView:results.view]) {
         return NO;
     }
-    // Never treat controls, text input, search or sheet content as "outside":
-    // those own their own actions and must not also dismiss the keyboard.
     for (UIView *view = touchView; view != nil; view = view.superview) {
         if ([view isKindOfClass:[UIControl class]] ||
             [view isKindOfClass:[UITextField class]] ||
@@ -1094,7 +1997,79 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     return YES;
 }
 
-#pragma mark - Route annotations and polyline
+- (void)installOutsideTapRecognizer {
+    if (self.outsideTapRecognizer != nil) {
+        return;
+    }
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(outsideTapped:)];
+    tap.delegate = self;
+    tap.cancelsTouchesInView = NO;
+    tap.delaysTouchesBegan = NO;
+    tap.delaysTouchesEnded = NO;
+    [self.view addGestureRecognizer:tap];
+    self.outsideTapRecognizer = tap;
+}
+
+- (void)outsideTapped:(UITapGestureRecognizer *)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateEnded) {
+        return;
+    }
+    [self endActiveSearch];
+}
+
+#pragma mark - Search delegate
+
+- (BOOL)searchBarShouldBeginEditing:(UISearchBar *)searchBar {
+    (void)searchBar;
+    [[GPSLabOverlayPresenter sharedPresenter] acquireKeyLease];
+    return YES;
+}
+
+- (void)searchBarTextDidBeginEditing:(UISearchBar *)searchBar {
+    if (!GPSLabSearchSessionIsActive(&_searchSession)) {
+        GPSLabSearchSessionBegin(&_searchSession);
+    }
+    searchBar.showsCancelButton = YES;
+    [self setSearchResultsVisible:YES];
+    [self.searchResultsController updateSearchResultsForQuery:searchBar.text ?: @""];
+}
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    (void)searchBar;
+    if (!GPSLabSearchSessionIsActive(&_searchSession)) {
+        return;
+    }
+    [self.searchResultsController updateSearchResultsForQuery:searchText ?: @""];
+}
+
+- (void)searchBarTextDidEndEditing:(UISearchBar *)searchBar {
+    searchBar.showsCancelButton = GPSLabSearchSessionIsActive(&_searchSession) ? YES : NO;
+}
+
+- (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    if (GPSLabSearchSessionCanCommit(&_searchSession)) {
+        GPSLabSearchSessionCommit(&_searchSession);
+    }
+    if (GPSLabSearchSessionIsActive(&_searchSession)) {
+        [self.searchResultsController updateSearchResultsForQuery:searchBar.text ?: @""];
+    }
+    [searchBar resignFirstResponder];
+}
+
+- (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
+    (void)searchBar;
+    [self endActiveSearch];
+}
+
+- (void)applyMapItem:(MKMapItem *)item {
+    if (item == nil) {
+        return;
+    }
+    [self applyCoordinate:item.placemark.coordinate altitude:[[GPSLabEngine sharedEngine] configuration].altitude];
+    [self endActiveSearch];
+}
+
+#pragma mark - Route annotations
 
 - (MKMapItem *)mapItemForCoordinate:(CLLocationCoordinate2D)coordinate name:(NSString *)name {
     MKPlacemark *placemark = [[MKPlacemark alloc] initWithCoordinate:coordinate];
@@ -1128,12 +2103,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [self.mapView removeOverlay:self.routeOverlay];
         self.routeOverlay = nil;
     }
-    // The route geometry is owned by the simulator; the canvas draws the traversed
-    // segment (start -> current position) as a visual aid while a route is active.
     GPSLabRouteSimulator *simulator = [[GPSLabEngine sharedEngine] routeSimulator];
     CLLocationCoordinate2D start = CLLocationCoordinate2DMake(0.0, 0.0);
     CLLocationCoordinate2D current = start;
-    double course = 0.0; // Positions only; a real out-param keeps the nullability contract.
+    double course = 0.0;
     if ([simulator routeStartCoordinate:&start] &&
         [simulator currentCoordinate:&current course:&course]) {
         CLLocationCoordinate2D coordinates[2] = { start, current };
@@ -1148,15 +2121,12 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     if ([annotation isKindOfClass:[MKUserLocation class]]) {
         return nil;
     }
-
-    // The real-location annotation is display-only: distinct pin, never draggable.
     if (annotation == self.realLocationAnnotation) {
         static NSString *realIdentifier = @"gpslabRealPin";
         MKMarkerAnnotationView *marker =
             (MKMarkerAnnotationView *)[mapView dequeueReusableAnnotationViewWithIdentifier:realIdentifier];
         if (marker == nil) {
-            marker = [[MKMarkerAnnotationView alloc] initWithAnnotation:annotation
-                                                        reuseIdentifier:realIdentifier];
+            marker = [[MKMarkerAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:realIdentifier];
             marker.draggable = NO;
             marker.canShowCallout = YES;
             marker.markerTintColor = UIColor.systemGreenColor;
@@ -1165,17 +2135,13 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         marker.annotation = annotation;
         return marker;
     }
-
     if (annotation == self.routeStartPin || annotation == self.routeEndPin) {
         BOOL isStart = (annotation == self.routeStartPin);
-        static NSString *startIdentifier = @"gpslabRouteStartPin";
-        static NSString *endIdentifier = @"gpslabRouteEndPin";
-        NSString *identifier = isStart ? startIdentifier : endIdentifier;
+        NSString *identifier = isStart ? @"gpslabRouteStartPin" : @"gpslabRouteEndPin";
         MKMarkerAnnotationView *marker =
             (MKMarkerAnnotationView *)[mapView dequeueReusableAnnotationViewWithIdentifier:identifier];
         if (marker == nil) {
-            marker = [[MKMarkerAnnotationView alloc] initWithAnnotation:annotation
-                                                        reuseIdentifier:identifier];
+            marker = [[MKMarkerAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:identifier];
             marker.draggable = NO;
             marker.canShowCallout = YES;
             marker.markerTintColor = isStart ? UIColor.systemOrangeColor : UIColor.systemRedColor;
@@ -1184,25 +2150,31 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         marker.annotation = annotation;
         return marker;
     }
-
     static NSString *identifier = @"gpslabPin";
     MKAnnotationView *view = [mapView dequeueReusableAnnotationViewWithIdentifier:identifier];
     if (view == nil) {
-        MKMarkerAnnotationView *marker = [[MKMarkerAnnotationView alloc] initWithAnnotation:annotation
-                                                                             reuseIdentifier:identifier];
+        MKMarkerAnnotationView *marker = [[MKMarkerAnnotationView alloc] initWithAnnotation:annotation reuseIdentifier:identifier];
         marker.draggable = YES;
         marker.canShowCallout = YES;
         marker.markerTintColor = UIColor.systemBlueColor;
         view = marker;
     }
     view.annotation = annotation;
-
     if ([annotation isKindOfClass:[GPSLabSyntheticAnnotation class]] && view.gestureRecognizers.count == 0) {
-        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self
-                                                                             action:@selector(annotationDragged:)];
+        UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(annotationDragged:)];
         [view addGestureRecognizer:pan];
     }
     return view;
+}
+
+- (void)annotationDragged:(UIPanGestureRecognizer *)recognizer {
+    CGPoint point = [recognizer locationInView:self.mapView];
+    CLLocationCoordinate2D coordinate = [self.mapView convertPoint:point toCoordinateFromView:self.mapView];
+    self.syntheticAnnotation.coordinate = coordinate;
+    if (recognizer.state == UIGestureRecognizerStateEnded ||
+        recognizer.state == UIGestureRecognizerStateCancelled) {
+        [self applyCoordinate:coordinate altitude:[[GPSLabEngine sharedEngine] configuration].altitude];
+    }
 }
 
 - (MKOverlayRenderer *)mapView:(MKMapView *)mapView rendererForOverlay:(id<MKOverlay>)overlay {
@@ -1217,10 +2189,6 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 #pragma mark - Real location display
 
-// The display manager is BYPASSED in the hook layer, so it always talks to real
-// CoreLocation and never receives synthetic fixes. Its coordinate is drawn on a
-// dedicated annotation and is never persisted or logged. `MKMapView.showsUserLocation`
-// is intentionally NOT used, because that uses an internal manager subject to the hooks.
 - (void)setRealLocationDisplayEnabled:(BOOL)enabled {
     _realLocationDisplayEnabled = enabled;
     if (enabled) {
@@ -1290,12 +2258,11 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         return;
     }
     GPSLabOverlayViewController *__weak weakSelf = self;
-    self.tickTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
-                                                     repeats:YES
-                                                       block:^(NSTimer *timer) {
+    self.tickTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) {
         (void)timer;
         [weakSelf rebuildRoutePolylineIfPossible];
         [weakSelf updateStatusLabel];
+        [weakSelf updateRouteControls];
     }];
 }
 
@@ -1306,24 +2273,118 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     }
 }
 
+- (void)scheduleBackgroundSnapshot {
+    [self.snapshotTimer invalidate];
+    self.snapshotTimer = [NSTimer scheduledTimerWithTimeInterval:0.8
+                                                         repeats:NO
+                                                           block:^(NSTimer *timer) {
+        (void)timer;
+        [self refreshBackgroundSnapshot];
+    }];
+}
+
+- (void)refreshBackgroundSnapshot {
+    if (self.view.window == nil) {
+        return;
+    }
+    CLLocationCoordinate2D anchor = [[GPSLabEngine sharedEngine] baseCoordinate];
+    MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(anchor, 3000.0, 3000.0);
+    MKMapSnapshotOptions *options = [[MKMapSnapshotOptions alloc] init];
+    options.region = region;
+    options.mapType = MKMapTypeStandard;
+    options.size = CGSizeMake(600.0, 600.0);
+    options.scale = 1.0;
+    MKMapSnapshotter *snapshotter = [[MKMapSnapshotter alloc] initWithOptions:options];
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    [snapshotter startWithCompletionHandler:^(MKMapSnapshot * _Nullable snapshot, NSError * _Nullable error) {
+        if (error != nil || snapshot == nil) {
+            return;
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            weakSelf.backgroundImageView.image = snapshot.image;
+        });
+    }];
+}
+
 #pragma mark - Status
 
 - (void)updateStatusLabel {
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
-    NSString *state = configuration.enabled ? GPSLabLocalized(@"overlay.enabled")
-                                            : GPSLabLocalized(@"overlay.disabled");
-    NSString *format = GPSLabLocalized(@"overlay.status.format");
-    self.statusLabel.text = [NSString stringWithFormat:format,
-                             state,
-                             configuration.latitude,
-                             configuration.longitude,
-                             configuration.altitude];
+    [GPSLabLocalization forceLeftToRight:self.coordsBigLabel];
+    self.coordsBigLabel.text = [NSString stringWithFormat:@"%@ %.6f\n%@ %.6f",
+                                GPSLabLocalized(@"panel.coord.latitude"),
+                                configuration.latitude,
+                                GPSLabLocalized(@"panel.coord.longitude"),
+                                configuration.longitude];
+    if (self.coordValueLabels.count >= 3) {
+        self.coordValueLabels[0].text = [GPSLabLocalization decimalString:configuration.latitude fractionDigits:5];
+        self.coordValueLabels[1].text = [GPSLabLocalization decimalString:configuration.longitude fractionDigits:5];
+        self.coordValueLabels[2].text = [GPSLabLocalization decimalString:configuration.altitude fractionDigits:0];
+    }
+    self.headingView.heading = configuration.heading;
+    self.headingValueLabel.text = [NSString stringWithFormat:GPSLabLocalized(@"panel.heading.format"),
+                                   [NSString stringWithFormat:@"°%03.0f", configuration.heading < 0.0 ? 0.0 : configuration.heading]];
+    self.driftSwitch.on = configuration.driftEnabled;
+    self.keepLastSwitch.on = configuration.keepLastCoordinate;
+    self.driftSwitch.accessibilityLabel = GPSLabLocalized(@"panel.toggle.drift");
+    self.keepLastSwitch.accessibilityLabel = GPSLabLocalized(@"panel.toggle.keepLast");
+    self.realLocationSwitch.accessibilityLabel = GPSLabLocalized(@"panel.toggle.realLocation");
 }
 
+- (void)updateSubscriptionCard {
+    GPSLabEntitlement *entitlement = [[GPSLabLicenseManager sharedManager] currentEntitlement];
+    GPSLabLicenseManager *manager = [GPSLabLicenseManager sharedManager];
+    GPSLabEntitlementState state = [manager state];
+    NSString *statusKey = @"subscription.status.unknown";
+    UIColor *color = GPSLabThemeMutedColor();
+    switch (state) {
+        case GPSLabEntitlementStateActive:  statusKey = @"subscription.status.active"; color = GPSLabThemeGreenColor(); break;
+        case GPSLabEntitlementStateGrace:   statusKey = @"subscription.status.grace"; color = GPSLabThemeGreenColor(); break;
+        case GPSLabEntitlementStateChecking: statusKey = @"subscription.status.checking"; break;
+        case GPSLabEntitlementStateExpired: statusKey = @"subscription.status.expired"; color = GPSLabThemeRedColor(); break;
+        case GPSLabEntitlementStateInvalid: statusKey = @"subscription.status.invalid"; color = GPSLabThemeRedColor(); break;
+        case GPSLabEntitlementStateOffline: statusKey = @"subscription.status.offline"; break;
+        default: break;
+    }
+    self.subscriptionStatusLabel.text = [NSString stringWithFormat:@"  %@  ", GPSLabLocalized(statusKey)];
+    self.subscriptionStatusLabel.textColor = color;
+    self.subscriptionStatusLabel.backgroundColor = [color colorWithAlphaComponent:0.14];
+    self.subscriptionStatusLabel.layer.borderWidth = 1.0;
+    self.subscriptionStatusLabel.layer.borderColor = [color colorWithAlphaComponent:0.28].CGColor;
+    NSString *plan = entitlement.plan;
+    self.subscriptionPlanValue.text = (plan.length > 0) ? plan : GPSLabLocalized(@"subscription.compact.planNone");
+    if (entitlement.expiresAt > 0) {
+        NSDate *date = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)entitlement.expiresAt];
+        self.subscriptionExpiryValue.text = [NSDateFormatter localizedStringFromDate:date
+                                                                         dateStyle:NSDateFormatterMediumStyle
+                                                                         timeStyle:NSDateFormatterNoStyle];
+    } else {
+        self.subscriptionExpiryValue.text = GPSLabLocalized(@"subscription.compact.planNone");
+    }
+}
+
+- (NSString *)installationIdentifierDisplay {
+    NSString *uuid = [[GPSLabSecureStore sharedStore] installationUUID];
+    return uuid.length > 0 ? uuid.uppercaseString : @"—";
+}
+
+#pragma mark - Notifications
+
 - (void)engineStateDidChange:(NSNotification *)notification {
-    self.enabledSwitch.on = [[GPSLabEngine sharedEngine] isEnabled];
-    [self updateStatusLabel];
+    (void)notification;
+    [self updateMasterAppearance];
     [self updateMapFromState];
+}
+
+- (void)licenseStateDidChange:(NSNotification *)notification {
+    (void)notification;
+    [self updateSubscriptionCard];
+}
+
+- (void)applicationDidBecomeActive:(NSNotification *)notification {
+    (void)notification;
+    [self updateSubscriptionCard];
+    [self scheduleBackgroundSnapshot];
 }
 
 @end

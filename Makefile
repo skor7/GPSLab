@@ -10,6 +10,8 @@ LIBRARY_NAME = GPSLab
 
 GPSLab_FILES = \
 	Source/GPSLabTypes.m \
+	Source/GPSLabProfileCore.c \
+	Source/GPSLabSchedulerCore.c \
 	Source/GPSLabLocalizationCore.c \
 	Source/GPSLabLocalization.m \
 	Source/GPSLabModalPolicy.c \
@@ -17,6 +19,21 @@ GPSLab_FILES = \
 	Source/GPSLabGeodesy.m \
 	Source/GPSLabConfiguration.m \
 	Source/GPSLabStore.m \
+	Source/GPSLabTheme.m \
+	Source/GPSLabProfile.m \
+	Source/GPSLabProfileStore.m \
+	Source/GPSLabSimulationModule.m \
+	Source/GPSLabWiFiSimulationModule.m \
+	Source/GPSLabBluetoothSimulationModule.m \
+	Source/GPSLabSimulationRegistry.m \
+	Source/GPSLabProfileApplicationCoordinator.m \
+	Source/GPSLabEngineProfileBackend.m \
+	Source/GPSLabScheduler.m \
+	Source/GPSLabSchedulerDefaultHost.m \
+	Source/GPSLabProfilesPanelView.m \
+	Source/GPSLabProfileFormViewController.m \
+	Source/GPSLabSimulationSettingsViewController.m \
+	Source/GPSLabScheduleViewController.m \
 	Source/GPSLabDriftModel.m \
 	Source/GPSLabLocationFactory.m \
 	Source/GPSLabRouteSimulator.m \

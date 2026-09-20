@@ -114,3 +114,116 @@ jobs:
           cc -I Source tests/gpslab_search_layout_test.c Source/GPSLabSearchLayoutCore.c \
             -o /tmp/gpslab_search_layout_test
           /tmp/gpslab_search_layout_test
+
+  profile-core-tests:
+    name: Profile schema core (portable C)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portable profile tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_profile_test.c Source/GPSLabProfileCore.c \
+            -o /tmp/gpslab_profile_test
+          /tmp/gpslab_profile_test
+
+  schedule-core-tests:
+    name: Schedule policy core (portable C)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portable schedule tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_schedule_test.c Source/GPSLabProfileCore.c \
+            -o /tmp/gpslab_schedule_test
+          /tmp/gpslab_schedule_test
+
+  profile-foundation-tests:
+    name: Profile model + store (macOS Foundation)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run profile Foundation tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -framework CoreLocation -ISource \
+            tests/GPSLabProfileTests.m Source/GPSLabProfile.m Source/GPSLabProfileStore.m \
+            Source/GPSLabProfileCore.c -o /tmp/gpslab-profile-tests
+          /tmp/gpslab-profile-tests
+
+  profile-application-tests:
+    name: Profile application adapter (macOS Foundation)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run profile application tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -framework CoreLocation -ISource \
+            tests/GPSLabProfileApplicationTests.m Source/GPSLabProfileApplicationCoordinator.m \
+            Source/GPSLabProfile.m Source/GPSLabProfileCore.c Source/GPSLabSimulationRegistry.m \
+            Source/GPSLabSimulationModule.m Source/GPSLabWiFiSimulationModule.m \
+            Source/GPSLabBluetoothSimulationModule.m -o /tmp/gpslab-application-tests
+          /tmp/gpslab-application-tests
+
+  simulation-module-tests:
+    name: Simulation/test modules (macOS Foundation)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run simulation module tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -framework CoreLocation -ISource \
+            tests/GPSLabSimulationModuleTests.m Source/GPSLabSimulationModule.m \
+            Source/GPSLabWiFiSimulationModule.m Source/GPSLabBluetoothSimulationModule.m \
+            Source/GPSLabSimulationRegistry.m Source/GPSLabProfile.m Source/GPSLabProfileCore.c \
+            -o /tmp/gpslab-simulation-tests
+          /tmp/gpslab-simulation-tests
+
+  scheduler-core-tests:
+    name: Scheduler policy core (portable C)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portable scheduler tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_scheduler_test.c Source/GPSLabSchedulerCore.c \
+            Source/GPSLabProfileCore.c -o /tmp/gpslab_scheduler_test
+          /tmp/gpslab_scheduler_test
+
+  scheduler-tests:
+    name: Scheduler (macOS Foundation, injected host)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run scheduler tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -ISource \
+            tests/GPSLabSchedulerTests.m Source/GPSLabScheduler.m Source/GPSLabSchedulerCore.c \
+            Source/GPSLabProfile.m Source/GPSLabProfileCore.c -o /tmp/gpslab-scheduler-tests
+          /tmp/gpslab-scheduler-tests

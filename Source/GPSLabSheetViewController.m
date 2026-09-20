@@ -68,11 +68,24 @@ UINavigationController *GPSLabSheetNavigationController(UIViewController *root) 
     [scrollView addSubview:stack];
 
     UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
+    // The scroll viewport hugs the keyboard when it is up and the safe-area
+    // bottom otherwise. Required inequalities plus two equalities (safe area at
+    // 999, keyboard at 998) keep the height >= 0 and never produce an
+    // unsatisfiable layout in tiny landscape / docked / undocked keyboards.
+    NSLayoutConstraint *bottomToSafeArea = [scrollView.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor];
+    bottomToSafeArea.priority = 999.0;
+    NSLayoutConstraint *bottomToKeyboard =
+        [scrollView.bottomAnchor constraintEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor];
+    bottomToKeyboard.priority = 998.0;
     [NSLayoutConstraint activateConstraints:@[
         [scrollView.topAnchor constraintEqualToAnchor:safeArea.topAnchor],
         [scrollView.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor],
         [scrollView.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor],
-        [scrollView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+        [scrollView.bottomAnchor constraintLessThanOrEqualToAnchor:safeArea.bottomAnchor],
+        [scrollView.bottomAnchor constraintLessThanOrEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor],
+        [scrollView.heightAnchor constraintGreaterThanOrEqualToConstant:0.0],
+        bottomToSafeArea,
+        bottomToKeyboard,
 
         [stack.topAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.topAnchor constant:16.0],
         [stack.bottomAnchor constraintEqualToAnchor:scrollView.contentLayoutGuide.bottomAnchor constant:-24.0],

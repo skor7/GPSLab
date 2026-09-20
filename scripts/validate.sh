@@ -95,6 +95,10 @@ require_declaring_import "GPSLabDriftModel.m" "GPSLabClampDouble" "GPSLabTypes.h
 require_declaring_import "GPSLabConfiguration.m" "GPSLabNormalizeHeading" "GPSLabGeodesy.h"
 require_declaring_import "GPSLabOverlayViewController.m" "GPSLabSearchSessionBegin" "GPSLabSearchLayoutCore.h"
 require_declaring_import "GPSLabSearchResultsViewController.m" "GPSLabSearchQueryIsSearchable" "GPSLabSearchLayoutCore.h"
+require_declaring_import "GPSLabProfileStore.m" "GPSLabProfileCountValid" "GPSLabProfileCore.h"
+require_declaring_import "GPSLabScheduler.m" "GPSLabProfileScheduleShouldApply" "GPSLabProfileCore.h"
+require_declaring_import "GPSLabEngineProfileBackend.m" "GPSLabClampDouble" "GPSLabTypes.h"
+require_declaring_import "GPSLabScheduler.m" "GPSLabSchedulerNextAction" "GPSLabSchedulerCore.h"
 
 # ------------------------------------------------- Declared-API usage ----------
 echo "== Declared-API usage invariants =="
@@ -279,27 +283,119 @@ grep -q -F "removeAnnotation:self.realLocationAnnotation" "$OVERLAY" \
     || fail "the real-location annotation must be removed when display is turned off"
 pass "real location uses a bypassed manager + separate annotation, never showsUserLocation"
 
-# ---------------------------------------------------- Map-first layout ----------
-echo "== Map-first layout =="
-# The MKMapView must be a direct subview of the controller root, pinned to the safe
-# area, and never embedded in a scrolling/stacked dashboard. All configuration lives
-# in separate native sheet controllers.
-if grep -n -E 'insertSubview:.*mapView.*belowSubview' "$OVERLAY" >/dev/null 2>&1; then
-    fail "overlay must not place the map behind a panel (insertSubview:mapView belowSubview:)"
-fi
-grep -q -F "addSubview:self.mapView" "$OVERLAY" \
-    || fail "overlay must add the MKMapView directly to the controller view"
-grep -q -F "[self.mapView.topAnchor constraintEqualToAnchor:safeArea.topAnchor]" "$OVERLAY" \
-    || fail "overlay map must be pinned to the top safe-area edge"
-grep -q -F "[self.mapView.bottomAnchor constraintEqualToAnchor:safeArea.bottomAnchor]" "$OVERLAY" \
-    || fail "overlay map must own the remaining safe area"
-if grep -n -E 'addArrangedSubview:self\.mapView|initWithArrangedSubviews:@\[self\.mapView' "$OVERLAY" >/dev/null 2>&1; then
-    fail "overlay map must not be an arranged subview of a dashboard stack"
-fi
+# ------------------------------------------------- Reference panel layout -----
+echo "== Reference panel layout =="
+# The approved reference is ONE compact floating panel over a lightweight map
+# snapshot background. The header and the standalone search bar are pinned; the
+# scrolling body starts with a real, interactive 278pt MKMapView card. This
+# supersedes the earlier "map owns the whole safe area" guard (explicitly
+# overridden by the user-approved reference rebuild).
 if grep -r -n -F "GPSLabOverlayScrollView" "$SOURCE_DIR" >/dev/null 2>&1; then
     fail "the old scrolling dashboard container must not be reintroduced"
 fi
-pass "map owns the remaining safe area; controls float above it; no dashboard scroll container"
+if grep -n -E 'addArrangedSubview:self\.mapView|initWithArrangedSubviews:@\[self\.mapView' "$OVERLAY" >/dev/null 2>&1; then
+    fail "the map must be inside the map card, not a bare arranged subview"
+fi
+if grep -n -F "controlsStack" "$OVERLAY" >/dev/null 2>&1; then
+    fail "the old floating control button stack must not be reintroduced"
+fi
+grep -q -F "self.panelView.layer.cornerRadius = 28.0" "$OVERLAY" \
+    || fail "panel must use the reference 28pt corner radius"
+grep -q -F "[self.panelView.topAnchor constraintEqualToAnchor:safe.topAnchor" "$OVERLAY" \
+    || fail "panel must be pinned to the safe-area top"
+grep -q -F "[self.panelView.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor" "$OVERLAY" \
+    || fail "panel must be pinned to the safe-area bottom"
+grep -q -F "[self.headerView.topAnchor constraintEqualToAnchor:self.panelView.topAnchor" "$OVERLAY" \
+    || fail "header must be pinned inside the panel"
+grep -q -F "[self.searchBarContainer.topAnchor constraintEqualToAnchor:self.headerView.bottomAnchor" "$OVERLAY" \
+    || fail "search bar must be pinned below the header"
+grep -q -F "[self.mapCard addSubview:mapView]" "$OVERLAY" \
+    || fail "the interactive MKMapView must be added to the visible map card"
+grep -q -F "[self.mapCard.heightAnchor constraintEqualToConstant:278.0]" "$OVERLAY" \
+    || fail "the map card must be the reference 278pt tall"
+grep -q -F "self.mapCard.layer.cornerRadius = 24.0" "$OVERLAY" \
+    || fail "map card must use the reference 24pt radius"
+grep -q -F "mapView.scrollEnabled = YES" "$OVERLAY" \
+    || fail "the map card must remain interactive"
+grep -q -F "[self.bodyStack addArrangedSubview:[self mapAreaContainer]]" "$OVERLAY" \
+    || fail "the map card must live in the scrolling body"
+grep -q -F "GPSLabSearchBarHeight(intrinsicHeight, 62.0)" "$OVERLAY" \
+    || fail "the reference search row must be 62pt"
+grep -q -F "MKMapSnapshotOptions" "$OVERLAY" \
+    || fail "the dimmed map background must use a lightweight MapKit snapshot"
+grep -q -F "GPSLabProfilesPanelView" "$OVERLAY" \
+    || fail "the reference profiles card must be hosted by the overlay"
+grep -q -F "subscription.compact.title" "$OVERLAY" \
+    || fail "the compact read-only subscription footer must be present"
+pass "one compact panel; pinned header/search; real 278pt interactive map card; scroll body"
+
+# ------------------------------------------------- Profiles / modules ---------
+echo "== Profiles / modules / schedule =="
+for file in GPSLabTheme.m GPSLabProfileCore.c GPSLabProfile.m GPSLabProfileStore.m \
+    GPSLabSimulationModule.m GPSLabWiFiSimulationModule.m GPSLabBluetoothSimulationModule.m \
+    GPSLabSimulationRegistry.m GPSLabProfileApplicationCoordinator.m GPSLabEngineProfileBackend.m \
+    GPSLabSchedulerCore.c GPSLabScheduler.m GPSLabSchedulerDefaultHost.m \
+    GPSLabProfilesPanelView.m GPSLabProfileFormViewController.m \
+    GPSLabSimulationSettingsViewController.m GPSLabScheduleViewController.m; do
+    [[ -f "$SOURCE_DIR/$file" ]] || fail "missing new source: $file"
+    grep -q -F "Source/$file" "$MAKEFILE" || fail "new source not compiled: $file"
+done
+# Simulation modules are config-only: no hardware, scan, pairing or identity API.
+if grep -r -n -E 'CNCopy|CBCentralManager|CBPeripheral|CBAdvertisement|NEHotspot|CoreBluetooth' \
+        "$SOURCE_DIR/GPSLabWiFiSimulationModule.m" "$SOURCE_DIR/GPSLabBluetoothSimulationModule.m" \
+        "$SOURCE_DIR/GPSLabSimulationRegistry.m" "$SOURCE_DIR/GPSLabSimulationModule.m" >/dev/null 2>&1; then
+    fail "simulation modules must not reference Wi-Fi/Bluetooth hardware or identity APIs"
+fi
+pass "simulation modules are config-only (no hardware/identity APIs)"
+grep -q -F "NSDataWritingAtomic" "$SOURCE_DIR/GPSLabProfileStore.m" \
+    || fail "profile store must write atomically"
+grep -q -F "NSFileProtectionCompleteUntilFirstUserAuthentication" "$SOURCE_DIR/GPSLabProfileStore.m" \
+    || fail "profile store must set file protection"
+grep -q -F "NSURLIsExcludedFromBackupKey" "$SOURCE_DIR/GPSLabProfileStore.m" \
+    || fail "profile store must exclude backups"
+grep -q -F "quarantineOnQueue" "$SOURCE_DIR/GPSLabProfileStore.m" \
+    || fail "profile store must quarantine a corrupted file"
+pass "profile store is atomic, protected, backup-excluded and quarantines corruption"
+grep -q -F "isLicenseUnlocked" "$SOURCE_DIR/GPSLabProfileApplicationCoordinator.m" \
+    || fail "profile coordinator must gate on the license"
+if grep -q -F "setEnabledAndNotify" "$SOURCE_DIR/GPSLabProfileApplicationCoordinator.m"; then
+    fail "profile coordinator must never enable/disable the engine directly"
+fi
+pass "profile coordinator gates on license and never toggles the engine"
+grep -q -F "GPSLabSchedulerNextAction" "$SOURCE_DIR/GPSLabScheduler.m" \
+    || fail "scheduler must use the pure C apply gate"
+grep -q -F "noteManualEngineDisable" "$SOURCE_DIR/GPSLabScheduler.m" \
+    || fail "scheduler must honor a manual disable"
+grep -q -F "GPSLabLicenseStateDidChangeNotification" "$SOURCE_DIR/GPSLabSchedulerDefaultHost.m" \
+    || fail "scheduler must observe license state read-only"
+pass "scheduler is gated, foreground-only and read-only on license"
+for testfile in tests/gpslab_profile_test.c tests/gpslab_schedule_test.c \
+    tests/GPSLabProfileTests.m tests/GPSLabProfileApplicationTests.m \
+    tests/GPSLabSimulationModuleTests.m tests/gpslab_scheduler_test.c \
+    tests/GPSLabSchedulerTests.m; do
+    [[ -f "$ROOT/$testfile" ]] || fail "test missing: $testfile"
+done
+pass "profile/schedule/simulation/scheduler tests are present"
+
+# ------------------------------------------------------------- Scheduler -------
+echo "== Scheduler policy =="
+grep -q -F "Source/GPSLabSchedulerCore.c" "$MAKEFILE" \
+    || fail "scheduler core must be compiled by the Makefile"
+grep -q -F "Source/GPSLabSchedulerDefaultHost.m" "$MAKEFILE" \
+    || fail "scheduler host must be compiled by the Makefile"
+grep -q -F "GPSLabSchedulerNextAction" "$SOURCE_DIR/GPSLabScheduler.m" \
+    || fail "scheduler must use the pure C decision core"
+grep -q -F "handleTimerGeneration" "$SOURCE_DIR/GPSLabScheduler.m" \
+    || fail "scheduler must guard stale timer wakes with a generation"
+grep -q -F "UIApplicationDidEnterBackgroundNotification" "$SOURCE_DIR/GPSLabScheduler.m" \
+    || fail "scheduler must suspend its timer in the background"
+if grep -q -F "setEnabledAndNotify:YES" "$SOURCE_DIR/GPSLabScheduler.m" \
+        "$SOURCE_DIR/GPSLabSchedulerDefaultHost.m" >/dev/null 2>&1; then
+    fail "scheduler must never enable the engine"
+fi
+grep -q -F "appliedProfileIdentifier" "$SOURCE_DIR/GPSLabSchedulerDefaultHost.m" \
+    || fail "scheduler ownership must come from the coordinator, not UI selection"
+pass "scheduler is gated, foreground-only, stale-safe and never enables the engine"
 
 # --------------------------------------------------------------- Search --------
 echo "== Search request hygiene =="
