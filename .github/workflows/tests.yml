@@ -99,3 +99,18 @@ jobs:
           cc -I Source tests/gpslab_modal_policy_test.c Source/GPSLabModalPolicy.c \
             -o /tmp/gpslab_modal_policy_test
           /tmp/gpslab_modal_policy_test
+
+  search-layout-tests:
+    name: Search layout core (portable C)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portable search layout tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_search_layout_test.c Source/GPSLabSearchLayoutCore.c \
+            -o /tmp/gpslab_search_layout_test
+          /tmp/gpslab_search_layout_test

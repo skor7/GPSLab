@@ -93,6 +93,8 @@ require_declaring_import() {
 require_declaring_import "GPSLabGeodesy.m" "GPSLabClampDouble" "GPSLabTypes.h"
 require_declaring_import "GPSLabDriftModel.m" "GPSLabClampDouble" "GPSLabTypes.h"
 require_declaring_import "GPSLabConfiguration.m" "GPSLabNormalizeHeading" "GPSLabGeodesy.h"
+require_declaring_import "GPSLabOverlayViewController.m" "GPSLabSearchSessionBegin" "GPSLabSearchLayoutCore.h"
+require_declaring_import "GPSLabSearchResultsViewController.m" "GPSLabSearchQueryIsSearchable" "GPSLabSearchLayoutCore.h"
 
 # ------------------------------------------------- Declared-API usage ----------
 echo "== Declared-API usage invariants =="
@@ -302,14 +304,74 @@ pass "map owns the remaining safe area; controls float above it; no dashboard sc
 # --------------------------------------------------------------- Search --------
 echo "== Search request hygiene =="
 SEARCH="$SOURCE_DIR/GPSLabSearchResultsViewController.m"
+SEARCH_CORE="$SOURCE_DIR/GPSLabSearchLayoutCore.c"
+SEARCH_CORE_H="$SOURCE_DIR/GPSLabSearchLayoutCore.h"
 [[ -f "$SEARCH" ]] || fail "GPSLabSearchResultsViewController.m missing"
 grep -q -F "MKLocalSearch" "$SEARCH" || fail "search must use MKLocalSearch"
 grep -q -F "activeSearch" "$SEARCH" || fail "search must track an active MKLocalSearch"
 grep -q -F "cancelActiveSearch" "$SEARCH" || fail "search must cancel the previous request"
 grep -q -F "searchGeneration" "$SEARCH" || fail "search must guard against stale responses"
-grep -q -F "didDismissSearchController" "$OVERLAY" || fail "search must cancel when dismissed"
-grep -q -F "cancelActiveSearch" "$OVERLAY" || fail "overlay must cancel the active search on dismiss"
-pass "active search is cancelled on new/short/dismiss/dealloc and stale results are ignored"
+grep -q -F "updateSearchResultsForQuery" "$SEARCH" \
+    || fail "results controller must be driven directly with the live query"
+grep -q -F "cancelActiveSearch" "$OVERLAY" || fail "overlay must cancel the active search on end"
+pass "active search is cancelled on new/short/end/dealloc and stale results are ignored"
+
+# The search bar is a standalone GPSLab view; the results controller is a
+# GPSLab-owned child. A UISearchController would reparent the bar into its own
+# presentation container and clip the fixed field (the v3 regression).
+echo "== Standalone search bar + child results =="
+if grep -q -F "UISearchController" "$OVERLAY"; then
+    fail "overlay must not use UISearchController (it reparents the fixed search bar)"
+fi
+if grep -q -F "didDismissSearchController" "$OVERLAY"; then
+    fail "overlay must not depend on UISearchController dismissal"
+fi
+grep -q -F "[[UISearchBar alloc] initWithFrame:" "$OVERLAY" \
+    || fail "overlay must own a standalone UISearchBar"
+grep -q -F "addChildViewController" "$OVERLAY" \
+    || fail "overlay must mount the results controller as a GPSLab child"
+grep -q -F "didMoveToParentViewController" "$OVERLAY" \
+    || fail "overlay must complete child containment"
+grep -q -F "insertSubview" "$OVERLAY" \
+    || fail "results child must be inserted below the fixed search container"
+grep -q -F 'GPSLabSearchSessionEnd(&_searchSession)' "$OVERLAY" \
+    || fail "overlay must end the pure C search session"
+grep -q -F "isDescendantOfView:results.view" "$OVERLAY" \
+    || fail "outside-tap must exclude the child results descendants"
+
+# Constraint architecture: a FIXED bar height (from the pure C helper) plus an
+# explicit results-height equality. The keyboard is only a NON-required upper
+# bound; an equality to the keyboard guide would let the solver stretch the
+# low-hugging bar/container into a giant blank panel.
+grep -q -F "GPSLabSearchBarHeight(" "$OVERLAY" \
+    || fail "bar height must come from the pure C GPSLabSearchBarHeight helper"
+grep -q -F "bar.heightAnchor constraintEqualToConstant:barHeight" "$OVERLAY" \
+    || fail "bar height must be a fixed required equality (not an inequality)"
+grep -q -F "resultHeightConstraint = height" "$OVERLAY" \
+    || fail "results height must be an explicit equality constraint"
+grep -q -F "[resultsView.heightAnchor constraintEqualToConstant:0.0]" "$OVERLAY" \
+    || fail "results height equality must be explicit and default to zero"
+grep -q -F "constraintLessThanOrEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor" "$OVERLAY" \
+    || fail "results bottom must be a less-than-or-equal bound to the keyboard guide"
+if grep -q -F "constraintEqualToAnchor:self.view.keyboardLayoutGuide" "$OVERLAY"; then
+    fail "results bottom must never EQUAL the keyboard guide (it stretches the bar/container)"
+fi
+if grep -q -F "resultsMaxHeightConstraint" "$OVERLAY"; then
+    fail "the max-height inequality must be replaced by the explicit height equality"
+fi
+pass "fixed bar height + explicit results-height equality; keyboard is an optional upper bound"
+
+# The pure C search layout/phase core must be compiled and covered by the
+# portable test (the same rules the overlay obeys at runtime).
+[[ -f "$SEARCH_CORE_H" ]] || fail "GPSLabSearchLayoutCore.h missing"
+[[ -f "$SEARCH_CORE" ]] || fail "GPSLabSearchLayoutCore.c missing"
+grep -q -F "Source/GPSLabSearchLayoutCore.c" "$MAKEFILE" \
+    || fail "search layout core must be compiled by the Makefile"
+grep -q -F '#import "GPSLabSearchLayoutCore.h"' "$OVERLAY" \
+    || fail "overlay must import the search layout core declaration"
+[[ -f "$ROOT/tests/gpslab_search_layout_test.c" ]] \
+    || fail "search layout test missing: tests/gpslab_search_layout_test.c"
+pass "search layout/phase core compiled and tested"
 
 # ------------------------------------------------------------- Gesture ---------
 echo "== Gesture contract =="

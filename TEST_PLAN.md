@@ -249,22 +249,27 @@ These rows cover the keyboard/presentation and localization work. CI proves the
 catalog, numeric normalization and persistence contract only; **every row below
 is device-manual and must be recorded as pending until run on hardware.**
 
-Clarified search-only root cause: Settings/Favorites present normally **before**
-search. Tapping Search starts a `UISearchController` session whose results
-presentation owns the layer above the canvas (the overlay window has no host
-navigation bar to host the search bar), so the search bar/keyboard and the map
-controls interact. The targeted fix keeps an explicit always-visible Cancel on
-the search bar, activates the controller only after editing begins, and cancels
-through the controller delegate. The lower rows (sheets, localization,
-lifecycle) are unchanged.
+Clarified search-only root cause (code-inferred, not device-confirmed): the
+overlay window is the root controller with **no navigation bar**, so a
+`UISearchController` had no host for its bar. On activation UIKit reparented the
+controller-owned search bar into its own presentation container, orphaning the
+Auto Layout constraints that pinned it to the fixed GPSLab container; the
+container clipped to an empty row and the full-window results presentation read
+as a large blank panel. The fix makes the bar a **standalone `UISearchBar`
+permanently owned by the fixed container** and mounts the results controller
+**once as a GPSLab child** below it, bounded above `view.keyboardLayoutGuide`
+with a pure-C height clamp (`GPSLabSearchLayoutCore`). No UIKit modal is used
+for search, and the bar is never reparented. The lower rows (sheets,
+localization, lifecycle) are unchanged, but the search rows below are updated
+and extended for the fixed geometry. All of them remain **device-manual**.
 
 | # | Steps | Expected |
 |---|-------|----------|
 | 5.1 | Fresh overlay; tap Settings, dismiss; tap Favorites, dismiss. | Both present and dismiss normally (baseline before search). |
-| 5.2 | Tap the search bar. | Keyboard appears; the GPSLab window owns input; typing filters results. |
-| 5.3 | While search is active, confirm the explicit Cancel is visible; tap it. | Search deactivates; the results layer is removed; map/header/floating controls return and are tappable. |
-| 5.4 | Repeat search; tap outside the results (map/header area). | Search deactivates (or the keyboard hides) without consuming map pan/zoom/drag. |
-| 5.5 | Repeat search; tap a result. | Anchor updates; search deactivates; map/controls return. |
+| 5.2 | Tap the search bar. | Keyboard appears; the GPSLab window owns input; the field stays visible below the header at normal height with a normal cursor; typing filters live results. |
+| 5.3 | While search is active, confirm the explicit Cancel is visible; tap it. | Search session ends; the child results panel is hidden (zero height); the bar stays in its fixed container; map/header/floating controls return and are tappable. |
+| 5.4 | Repeat search; tap outside the results (map/header area). | Search ends without consuming map pan/zoom/drag. |
+| 5.5 | Repeat search; tap a result. | The coordinate is applied first, then search ends and the panel hides; map/controls return. |
 | 5.6 | After each search exit, tap Settings then Favorites again. | Both still present exactly once (regression check for the search session). |
 | 5.7 | With search active, tap a control if reachable. | Search ends first, then the requested sheet appears exactly once. |
 | 5.8 | Double-tap settings/favorites quickly. | Only one sheet is presented; no orphaned or stacked duplicate modal. |
@@ -284,13 +289,24 @@ lifecycle) are unchanged.
 | 5.22 | Multi-scene: move the overlay between scenes while a sheet is open. | Window re-created on the active scene; no crash; key lease released/restored conservatively. |
 | 5.23 | Background the app with the overlay open, then foreground. | Host is not left behind a non-interactive window; tapping a GPSLab text field re-acquires the keyboard. |
 | 5.24 | `os_log` review through every UI/locale action. | Only allow-listed events; no coordinates, names, queries or tokens logged. |
-| 5.25 | In search, press the keyboard Search key. | The query runs, the keyboard hides, and Cancel stays visible; overlapping results never trap the user. |
-| 5.26 | Tap Cancel while results are still dismissing, then immediately tap Settings. | The sheet is deferred until search actually dismisses, then presents once from the canvas (never from the search controller). |
+| 5.25 | In search, press the keyboard Search key. | The query runs and commits the session, the keyboard hides, and the bar/Cancel/results stay visible; no blank panel. |
+| 5.26 | With a live search session, tap Settings. | The session ends (child hidden first), then the sheet presents exactly once from the canvas on the next main-queue turn; never from a search presentation. |
 | 5.27 | Rapidly tap Settings then Favorites while the first sheet animates in. | Exactly one sheet presents; the duplicate is dropped after the first settles (no faked completion, no orphan). |
 | 5.28 | Interactively pull a sheet down halfway, cancel it, then immediately open another. | The next sheet presents only after the interactive transition settles; no stuck busy state. |
 | 5.29 | Interactively pull a sheet down to dismiss, then immediately tap Settings. | One dismissal completes, then Settings presents from the canvas. |
 | 5.30 | Open Manual entry, focus a coordinate field, background the app, foreground it, focus the field again. | Field values are preserved; the keyboard appears again (key lease re-acquired on scene activation, host scope untouched). |
 | 5.31 | With a sheet open, swap the GPSLab root in place (entitlement transition). | Queued modal work from the old root is invalidated by the session generation; no stale sheet presents on the new root. |
+| 5.32 | Focus search, then type Arabic and English text. | The field remains pinned below the header at a normal intrinsic height; typed text and the insertion cursor are visible in light and dark; Cancel stays on screen; no full-window blank panel appears. |
+| 5.33 | Focus search with an empty or <3-character query. | The panel is compact (roughly 80–120 pt, Dynamic-Type aware) showing the localized Done and the existing `search.empty` message; it is never full-height. Clear an Arabic query and confirm the Arabic empty message returns. |
+| 5.34 | Type ≥3 characters and let results arrive. | Results appear in a bounded panel below the field that never covers the header or search field; the map stays visible below the bounded panel and still pans/zooms beside it. |
+| 5.35 | Set Dynamic Type to the largest and smallest sizes, then search. | The field keeps a normal height; the compact panel scales with the text; the panel never exceeds the available area and nothing clips. |
+| 5.36 | Search in landscape / on a notched device with the keyboard up. | The panel stays above `keyboardLayoutGuide` with no negative or zero-height field; results remain scrollable. |
+| 5.37 | Arabic UI, search with Arabic and with Latin/English text. | The field inherits the GPSLab RTL direction; the map geography is never mirrored; natural-language queries work in both languages. |
+| 5.38 | Tap Done in the results header, then repeat and tap Cancel. | Both end the session and hide the panel; the bar returns to its normal fixed position; repeated Cancel is idempotent. |
+| 5.39 | While a live session shows results, tap a table cell, the Done button, or the table background. | The tap reaches the child panel (selection/Done) and does not dismiss the session first; the outside-tap recognizer excludes results descendants. |
+| 5.40 | With a live session, tap Settings/Favorites/Route. | The session ends, the child is hidden, and exactly one sheet presents from the canvas. |
+| 5.41 | Rapidly tap Search, type, Cancel, then Search again, then type. | A late query/textDidEnd callback after Cancel never resurrects the session; the new session drives fresh results with a clean generation. |
+| 5.42 | Note the search field's top and height on a long screen with no query, then focus it, type a ≥3-char query with many results, and Cancel. | The field keeps the SAME top and height in every state (inactive/active/empty/many/Cancel); only the results panel below it changes height, so no giant blank bar/panel ever appears. |
 
 ## Pass/fail recording
 

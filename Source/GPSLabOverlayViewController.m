@@ -28,6 +28,7 @@
 #import "GPSLabOverlayPresenter.h"
 #import "GPSLabRecentsViewController.h"
 #import "GPSLabRouteViewController.h"
+#import "GPSLabSearchLayoutCore.h"
 #import "GPSLabSearchResultsViewController.h"
 #import "GPSLabSheetViewController.h"
 #import "GPSLabStatusLog.h"
@@ -55,8 +56,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 #pragma mark - Overlay controller
 
 @interface GPSLabOverlayViewController () <MKMapViewDelegate, CLLocationManagerDelegate,
-                                            UISearchControllerDelegate, UISearchBarDelegate,
-                                            UIGestureRecognizerDelegate>
+                                            UISearchBarDelegate, UIGestureRecognizerDelegate> {
+    // Pure C search-session lifecycle (see GPSLabSearchLayoutCore.h).
+    GPSLabSearchSession _searchSession;
+}
 
 @property (nonatomic, strong) MKMapView *mapView;
 
@@ -71,8 +74,6 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 @property (nonatomic, strong) UIVisualEffectView *searchBarContainer;
 @property (nonatomic, strong) UIStackView *controlsStack;
 @property (nonatomic, strong, nullable) UITapGestureRecognizer *outsideTapRecognizer;
-// YES from the moment deactivation is requested until didDismissSearchController.
-@property (nonatomic, assign) BOOL searchDismissing;
 
 @property (nonatomic, strong) UIVisualEffectView *pickBanner;
 @property (nonatomic, strong) UILabel *pickBannerLabel;
@@ -94,8 +95,9 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 @property (nonatomic, strong, nullable) CLLocationManager *displayLocationManager;
 @property (nonatomic, strong, nullable) MKPointAnnotation *realLocationAnnotation;
 
-@property (nonatomic, strong, nullable) UISearchController *searchController;
+@property (nonatomic, strong, nullable) UISearchBar *searchBar;
 @property (nonatomic, strong, nullable) GPSLabSearchResultsViewController *searchResultsController;
+@property (nonatomic, strong, nullable) NSLayoutConstraint *resultHeightConstraint;
 
 @property (nonatomic, strong, nullable) NSTimer *tickTimer;
 
@@ -131,6 +133,18 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
                                              selector:@selector(languageDidChange:)
                                                  name:GPSLabLanguageDidChangeNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(keyboardWillChangeFrame:)
+                                                 name:UIKeyboardWillChangeFrameNotification
+                                               object:nil];
+}
+
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    // Keep the bounded results panel sized to the measured available area. The
+    // update only writes the constraint when the value actually changed, so the
+    // layout pass converges after a single extra pass.
+    [self updateSearchResultsLayout];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -277,8 +291,13 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 #pragma mark - Visible search bar
 
-// A real, always-visible UISearchBar (the UISearchController's own bar) rather than a
-// magnifier button, wired to MKLocalSearch through the results controller.
+// A standalone UISearchBar permanently owned by the fixed GPSLab container.
+// There is deliberately no controller-owned bar here: a hosted search
+// controller reparents its bar into its own presentation container on
+// activation (the overlay window has no navigation bar to host it), which
+// clipped the fixed field and produced a full-window blank panel. The bar below
+// is never reparented; the results controller is mounted once as a GPSLab
+// child.
 - (void)buildSearchBar {
     GPSLabSearchResultsViewController *results = [[GPSLabSearchResultsViewController alloc] init];
     GPSLabOverlayViewController *__weak weakSelf = self;
@@ -288,22 +307,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     results.doneHandler = ^{
         [weakSelf endActiveSearch];
     };
+    results.contentChangeHandler = ^{
+        [weakSelf updateSearchResultsLayout];
+    };
     self.searchResultsController = results;
-
-    UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:results];
-    search.searchResultsUpdater = results;
-    search.delegate = self;
-    search.obscuresBackgroundDuringPresentation = NO;
-    search.hidesNavigationBarDuringPresentation = NO;
-    // The bar is embedded in a plain content view (no navigation bar to host it),
-    // so GPSLab drives the cancel button itself to guarantee a visible escape
-    // while the search results container is presented.
-    if (@available(iOS 13.0, *)) {
-        search.automaticallyShowsCancelButton = NO;
-    }
-    search.searchBar.delegate = self;
-    search.searchBar.searchBarStyle = UISearchBarStyleMinimal;
-    self.searchController = search;
 
     UIVisualEffectView *container = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
     container.translatesAutoresizingMaskIntoConstraints = NO;
@@ -312,9 +319,30 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     [self.view addSubview:container];
     self.searchBarContainer = container;
 
-    UISearchBar *bar = search.searchBar;
+    UISearchBar *bar = [[UISearchBar alloc] initWithFrame:CGRectZero];
     bar.translatesAutoresizingMaskIntoConstraints = NO;
+    bar.delegate = self;
+    bar.searchBarStyle = UISearchBarStyleMinimal;
+    // Native system colors keep typed text, placeholder and the insertion point
+    // legible in both light and dark appearance. Writing direction is left to
+    // the GPSLab scope (Arabic RTL / English LTR) so the bar inherits it rather
+    // than forcing a direction of its own.
+    if (@available(iOS 13.0, *)) {
+        bar.searchTextField.textColor = UIColor.labelColor;
+        bar.searchTextField.tintColor = self.view.tintColor;
+    }
+    self.searchBar = bar;
     [container.contentView addSubview:bar];
+
+    // FIXED bar height. A required equality is what stops the results panel's
+    // keyboard constraint from stretching the low-hugging bar/container (the
+    // v3 giant blank panel). The height is measured once from the native bar's
+    // intrinsic size and is identical in every phase (inactive/active/Cancel).
+    CGFloat intrinsicHeight = bar.intrinsicContentSize.height;
+    if (!(intrinsicHeight > 0.0)) {
+        intrinsicHeight = 56.0; // pre-layout fallback; never shrinks the bar
+    }
+    CGFloat barHeight = GPSLabSearchBarHeight(intrinsicHeight, 44.0);
 
     UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -326,7 +354,121 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [bar.leadingAnchor constraintEqualToAnchor:container.contentView.leadingAnchor constant:6.0],
         [bar.trailingAnchor constraintEqualToAnchor:container.contentView.trailingAnchor constant:-6.0],
         [bar.bottomAnchor constraintEqualToAnchor:container.contentView.bottomAnchor constant:-4.0],
+        [bar.heightAnchor constraintEqualToConstant:barHeight],
     ]];
+
+    [self mountSearchResultsChild];
+}
+
+// Mounts the results controller ONCE as a GPSLab-owned child (never presented by
+// UIKit for search). Its panel sits below the fixed search container, bounded to
+// the available area above the keyboard layout guide, so the map stays visible.
+- (void)mountSearchResultsChild {
+    GPSLabSearchResultsViewController *results = self.searchResultsController;
+    if (results == nil) {
+        return;
+    }
+    [self addChildViewController:results];
+    UIView *resultsView = results.view;
+    resultsView.translatesAutoresizingMaskIntoConstraints = NO;
+    resultsView.layer.cornerRadius = 14.0;
+    resultsView.layer.masksToBounds = YES;
+    resultsView.hidden = YES;
+    // Below the fixed container in z-order so the panel can never cover the
+    // header or the search field.
+    [self.view insertSubview:resultsView belowSubview:self.searchBarContainer];
+    [results didMoveToParentViewController:self];
+
+    UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
+    // The panel height is an explicit required equality to the clamped desired
+    // value (0 when inactive), so the solver never maximizes it and the fixed
+    // bar/container can never be stretched.
+    NSLayoutConstraint *height = [resultsView.heightAnchor constraintEqualToConstant:0.0];
+    self.resultHeightConstraint = height;
+
+    // Keyboard avoidance is a NON-required upper bound only. It never pushes the
+    // panel (or anything above it) and is silently broken when no space exists.
+    NSLayoutConstraint *bottomLimit = [resultsView.bottomAnchor
+        constraintLessThanOrEqualToAnchor:self.view.keyboardLayoutGuide.topAnchor
+                                 constant:-8.0];
+    bottomLimit.priority = 999.0;
+
+    [NSLayoutConstraint activateConstraints:@[
+        // Only the field's bottom constant; no feedback into the bar/container.
+        [resultsView.topAnchor constraintEqualToAnchor:self.searchBarContainer.bottomAnchor constant:8.0],
+        [resultsView.leadingAnchor constraintEqualToAnchor:safeArea.leadingAnchor constant:12.0],
+        [resultsView.trailingAnchor constraintEqualToAnchor:safeArea.trailingAnchor constant:-12.0],
+        height,
+        bottomLimit,
+    ]];
+}
+
+#pragma mark - Results panel layout
+
+- (void)setSearchResultsVisible:(BOOL)visible {
+    GPSLabSearchResultsViewController *results = self.searchResultsController;
+    if (results == nil || !results.isViewLoaded) {
+        return;
+    }
+    results.view.hidden = !visible;
+    if (visible) {
+        [self updateSearchResultsLayout];
+    } else if (self.resultHeightConstraint.constant != 0.0) {
+        self.resultHeightConstraint.constant = 0.0;
+    }
+}
+
+// Sizes the bounded results panel from the measured keyboard layout guide. The
+// required height equality is the only thing this writes (never the bar or the
+// container), and only when the value actually changed, so the layout pass
+// converges after at most one extra pass (no recursive height churn).
+- (void)updateSearchResultsLayout {
+    if (self.resultHeightConstraint == nil ||
+        self.searchResultsController == nil ||
+        !self.searchResultsController.isViewLoaded) {
+        return;
+    }
+    if (self.searchResultsController.view.hidden) {
+        if (self.resultHeightConstraint.constant != 0.0) {
+            self.resultHeightConstraint.constant = 0.0;
+        }
+        return;
+    }
+
+    // Measure in the canvas' coordinate system; the guide never extends past
+    // the viewport and clamps to a non-negative available height.
+    CGFloat viewport = CGRectGetHeight(self.view.bounds);
+    CGFloat topOffset = CGRectGetMaxY(self.searchBarContainer.frame) + 8.0;
+    CGRect guide = self.view.keyboardLayoutGuide.layoutFrame;
+    // The bottom bound keeps an 8pt gap: pass guide.top - 8 so the computed
+    // desired height satisfies results.bottom <= guide.top - 8 exactly.
+    CGFloat available = GPSLabSearchAvailableHeight(viewport, topOffset, CGRectGetMinY(guide) - 8.0);
+
+    UIFontMetrics *metrics = [UIFontMetrics metricsForTextStyle:UIFontTextStyleBody];
+    GPSLabSearchLayoutMetrics layout;
+    layout.min_height = 0.0;
+    layout.compact_height = MAX(80.0, [metrics scaledValueForValue:96.0]);
+    layout.max_height = 320.0;
+    layout.max_viewport_fraction = 0.45;
+
+    CGFloat content = self.searchResultsController.estimatedContentHeight;
+    BOOL hasResults = self.searchResultsController.hasResults;
+    CGFloat desired = GPSLabSearchResultsHeight(available, viewport, content, hasResults ? 1 : 0, layout);
+
+    if (fabs(desired - self.resultHeightConstraint.constant) > 0.5) {
+        self.resultHeightConstraint.constant = desired;
+    }
+}
+
+- (void)keyboardWillChangeFrame:(NSNotification *)notification {
+    (void)notification;
+    if (self.searchResultsController == nil || self.searchResultsController.view.hidden) {
+        return;
+    }
+    // Refresh the guide, then recompute the required panel height so it tracks
+    // the keyboard. The optional bottom bound is a safety net only.
+    [self.view layoutIfNeeded];
+    [self updateSearchResultsLayout];
 }
 
 #pragma mark - Floating controls
@@ -481,31 +623,41 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 #pragma mark - Localization
 
 - (BOOL)isSearchActive {
-    return self.searchController.isActive;
+    return GPSLabSearchSessionIsActive(&_searchSession);
 }
 
 - (BOOL)isSearchSessionActive {
-    return self.searchController.isActive || self.searchDismissing;
-}
-
-- (void)deactivateSearch {
-    if (self.searchController == nil) {
-        return;
-    }
-    [self.searchResultsController cancelActiveSearch];
-    if (self.searchController.isActive) {
-        // Keep the Cancel escape visible until didDismiss confirms the session
-        // actually ended; the results layer can still be on screen meanwhile.
-        self.searchDismissing = YES;
-        [self.searchController setActive:NO];
-    } else {
-        self.searchDismissing = NO;
-    }
+    // The child results controller is not a UIKit modal, so there is no
+    // dismissing phase: the session is active until it is explicitly ended.
+    return GPSLabSearchSessionIsActive(&_searchSession);
 }
 
 - (void)endActiveSearch {
-    [self.searchController.searchBar resignFirstResponder];
-    [self deactivateSearch];
+    BOOL wasActive = GPSLabSearchSessionIsActive(&_searchSession);
+
+    // Reset session state and hide the child BEFORE resuming any deferred
+    // presentation, so the coordinator sees an inactive canvas.
+    [self.searchBar resignFirstResponder];
+    [self setSearchResultsVisible:NO];
+    [self.searchResultsController cancelActiveSearch];
+    [self.searchResultsController endSearchSession];
+    GPSLabSearchSessionEnd(&_searchSession);
+    self.searchBar.text = @"";
+    self.searchBar.showsCancelButton = NO;
+
+    if (wasActive) {
+        [self scheduleResolvePendingPresentation];
+    }
+}
+
+// The coordinator's drain is non-reentrant. The child results controller has no
+// UIKit modal transition, so the resume runs on the next main-queue turn: this
+// can never nest inside the coordinator's current defer branch and lose the
+// bounded pending presentation.
+- (void)scheduleResolvePendingPresentation {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[GPSLabModalCoordinator sharedCoordinator] resolvePendingPresentation];
+    });
 }
 
 - (void)languageDidChange:(NSNotification *)notification {
@@ -523,8 +675,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.titleLabel.text = GPSLabLocalized(@"overlay.title");
     self.enabledLabel.text = GPSLabLocalized(@"overlay.enabled");
     self.enabledSwitch.accessibilityLabel = GPSLabLocalized(@"overlay.enabled");
-    self.searchController.searchBar.placeholder = GPSLabLocalized(@"overlay.search.placeholder");
-    self.searchController.searchBar.accessibilityLabel = GPSLabLocalized(@"overlay.search.placeholder");
+    self.searchBar.placeholder = GPSLabLocalized(@"overlay.search.placeholder");
+    self.searchBar.accessibilityLabel = GPSLabLocalized(@"overlay.search.placeholder");
     [self.pickCancelButton setTitle:GPSLabLocalized(@"common.cancel") forState:UIControlStateNormal];
 
     self.headerSettingsButton.accessibilityLabel = GPSLabLocalized(@"overlay.accessibility.settings");
@@ -620,42 +772,49 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 }
 
 - (void)searchBarTextDidBeginEditing:(UISearchBar *)searchBar {
-    // Activate only once editing has actually begun. Calling setActive: inside
-    // shouldBeginEditing can pre-empt the first responder and leave the keyboard
-    // hidden while the results container takes the presentation layer.
-    searchBar.showsCancelButton = YES;
-    if (!self.searchController.isActive) {
-        [self.searchController setActive:YES];
+    // The bar is a standalone GPSLab view; activation only starts the session
+    // and reveals the bounded child results panel below it. The bar and the
+    // first responder are never re-added or replaced.
+    if (!GPSLabSearchSessionIsActive(&_searchSession)) {
+        GPSLabSearchSessionBegin(&_searchSession);
     }
+    searchBar.showsCancelButton = YES;
+    [self setSearchResultsVisible:YES];
+    [self.searchResultsController updateSearchResultsForQuery:searchBar.text ?: @""];
+}
+
+- (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
+    (void)searchBar;
+    // Only a live session may drive results: a late callback after Cancel must
+    // not resurrect the search phase.
+    if (!GPSLabSearchSessionIsActive(&_searchSession)) {
+        return;
+    }
+    [self.searchResultsController updateSearchResultsForQuery:searchText ?: @""];
 }
 
 - (void)searchBarTextDidEndEditing:(UISearchBar *)searchBar {
-    // Keep Cancel visible for the whole search session: resigning the keyboard
-    // (e.g. the Search key) must not remove the only escape while the results
-    // layer still covers the canvas.
-    searchBar.showsCancelButton = self.searchController.isActive;
+    // Keep Cancel visible for the whole session: resigning the keyboard (e.g.
+    // the Search key) must not remove the only escape while results are shown.
+    searchBar.showsCancelButton = GPSLabSearchSessionIsActive(&_searchSession) ? YES : NO;
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
-    // Run the pending/current query before resigning so results stay fresh
-    // without ending the session.
-    [self.searchResultsController updateSearchResultsForSearchController:self.searchController];
+    // Explicit Search key: commit the session (only while editing), refresh the
+    // query, then resign the keyboard. The bar, Cancel and results stay on
+    // screen.
+    if (GPSLabSearchSessionCanCommit(&_searchSession)) {
+        GPSLabSearchSessionCommit(&_searchSession);
+    }
+    if (GPSLabSearchSessionIsActive(&_searchSession)) {
+        [self.searchResultsController updateSearchResultsForQuery:searchBar.text ?: @""];
+    }
     [searchBar resignFirstResponder];
 }
 
 - (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
-    [searchBar resignFirstResponder];
-    [self deactivateSearch];
-}
-
-- (void)didDismissSearchController:(UISearchController *)searchController {
-    // The session is only truly over here; clean the live query, hide Cancel and
-    // resume any presentation deferred while search owned the context.
-    (void)searchController;
-    self.searchDismissing = NO;
-    self.searchController.searchBar.showsCancelButton = self.searchController.isActive;
-    [self.searchResultsController endSearchSession];
-    [[GPSLabModalCoordinator sharedCoordinator] resolvePendingPresentation];
+    (void)searchBar;
+    [self endActiveSearch];
 }
 
 - (void)applyMapItem:(MKMapItem *)item {
@@ -663,7 +822,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         return;
     }
     [self applyCoordinate:item.placemark.coordinate altitude:[[GPSLabEngine sharedEngine] configuration].altitude];
-    [self deactivateSearch];
+    [self endActiveSearch];
 }
 
 #pragma mark - Sheet presentation
@@ -909,6 +1068,13 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     }
     UIView *touchView = touch.view;
     if (touchView == nil) {
+        return NO;
+    }
+    // The child results panel owns its table cells and Done button: a tap there
+    // must reach the table (selection / Done), never end the search first.
+    GPSLabSearchResultsViewController *results = self.searchResultsController;
+    if (results != nil && results.isViewLoaded &&
+        [touchView isDescendantOfView:results.view]) {
         return NO;
     }
     // Never treat controls, text input, search or sheet content as "outside":

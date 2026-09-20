@@ -13,6 +13,7 @@ GPSLab_FILES = \
 	Source/GPSLabLocalizationCore.c \
 	Source/GPSLabLocalization.m \
 	Source/GPSLabModalPolicy.c \
+	Source/GPSLabSearchLayoutCore.c \
 	Source/GPSLabGeodesy.m \
 	Source/GPSLabConfiguration.m \
 	Source/GPSLabStore.m \

@@ -39,9 +39,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)dismissAllAnimated:(BOOL)animated completion:(nullable void (^)(void))completion;
 
 /**
- * Called by the canvas from `didDismissSearchController`. Runs a presentation
- * that was deferred because search was active. Safe to call when nothing is
- * pending.
+ * Called by the canvas after it ends a search session (standalone search bar;
+ * there is no UISearchController dismissal). Runs a presentation that was
+ * deferred because search was active. Safe to call when nothing is pending.
  */
 - (void)resolvePendingPresentation;
 

@@ -12,13 +12,20 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface GPSLabOverlayViewController : UIViewController
 
-/** YES while the search controller is active and owns the presentation context. */
+/**
+ * YES while the standalone search bar owns an active session. Kept as the
+ * backwards-compatible adapter for the root-scene presentation contract.
+ */
 @property (nonatomic, readonly, getter=isSearchActive) BOOL searchActive;
 
-/** YES while the search session is active OR still dismissing (until didDismiss). */
+/**
+ * YES while the search session is active. The results controller is a
+ * GPSLab-owned child (not a UIKit modal), so there is no dismissing phase and
+ * this is equivalent to `isSearchActive` until the session is explicitly ended.
+ */
 @property (nonatomic, readonly, getter=isSearchSessionActive) BOOL searchSessionActive;
 
-/** Ends an active search (no-op when search is not active). */
+/** Ends an active search (idempotent; no-op when search is not active). */
 - (void)endActiveSearch;
 
 @end

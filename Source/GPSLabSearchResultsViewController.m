@@ -2,14 +2,21 @@
 //  GPSLabSearchResultsViewController.m
 //  GPSLab
 //
-//  MKLocalSearch results with stale-response protection. Extracted from the old
-//  dashboard so the map canvas stays small and focused.
+//  MKLocalSearch results with stale-response protection. This controller is a
+//  GPSLab-owned child of the overlay canvas, driven directly with the live
+//  query (no UISearchController presentation layer).
 //
 
 #import "GPSLabSearchResultsViewController.h"
 
 #import "GPSLabLocalization.h"
+#import "GPSLabSearchLayoutCore.h"
 #import "GPSLabStatusLog.h"
+
+// Height of the results header that hosts the localized Done escape. The empty
+// message is centered in the area BELOW this header so a compact panel never
+// overlaps Done.
+static const CGFloat kGPSLabSearchResultsHeaderHeight = 48.0;
 
 @interface GPSLabSearchResultsViewController ()
 @property (nonatomic, strong) NSArray<MKMapItem *> *results;
@@ -30,17 +37,36 @@
     [super viewDidLoad];
     self.results = @[];
     self.activeQuery = @"";
+    self.tableView.estimatedRowHeight = 56.0;
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+
     self.emptyLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     self.emptyLabel.textAlignment = NSTextAlignmentCenter;
     self.emptyLabel.numberOfLines = 0;
     self.emptyLabel.textColor = UIColor.secondaryLabelColor;
     self.emptyLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
     self.emptyLabel.adjustsFontForContentSizeCategory = YES;
-    self.tableView.backgroundView = self.emptyLabel;
+
+    // A container background keeps the empty message centered in the area below
+    // the header, so the compact panel does not overlap the Done button.
+    UIView *background = [[UIView alloc] initWithFrame:CGRectZero];
+    self.emptyLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [background addSubview:self.emptyLabel];
+    NSLayoutConstraint *emptyCenter =
+        [self.emptyLabel.centerYAnchor constraintEqualToAnchor:background.centerYAnchor
+                                                      constant:kGPSLabSearchResultsHeaderHeight / 2.0];
+    emptyCenter.priority = 999.0; // prefers below the header, never unsatisfiable
+    [NSLayoutConstraint activateConstraints:@[
+        [self.emptyLabel.topAnchor constraintGreaterThanOrEqualToAnchor:background.topAnchor],
+        emptyCenter,
+        [self.emptyLabel.leadingAnchor constraintEqualToAnchor:background.leadingAnchor constant:16.0],
+        [self.emptyLabel.trailingAnchor constraintEqualToAnchor:background.trailingAnchor constant:-16.0],
+    ]];
+    self.tableView.backgroundView = background;
 
     // Public-API escape: while search covers the canvas, a GPSLab-owned,
     // localized Done button stays reachable in the results header.
-    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, 48)];
+    UIView *header = [[UIView alloc] initWithFrame:CGRectMake(0, 0, 1, kGPSLabSearchResultsHeaderHeight)];
     header.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     self.doneButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.doneButton.translatesAutoresizingMaskIntoConstraints = NO;
@@ -82,8 +108,35 @@
     [self applyLocalization];
 }
 
+#pragma mark - Content state
+
+- (BOOL)hasResults {
+    return self.results.count > 0;
+}
+
+- (CGFloat)estimatedContentHeight {
+    if (self.results.count == 0) {
+        return 0.0;
+    }
+    CGFloat row = [UIFontMetrics.defaultMetrics scaledValueForValue:56.0];
+    return kGPSLabSearchResultsHeaderHeight + (CGFloat)self.results.count * row;
+}
+
+- (void)notifyContentChanged {
+    if (self.contentChangeHandler != nil) {
+        self.contentChangeHandler();
+    }
+}
+
 - (void)updateEmptyState {
     self.emptyLabel.hidden = self.results.count > 0;
+}
+
+- (void)applyResults:(NSArray<MKMapItem *> *)results {
+    self.results = results ?: @[];
+    [self updateEmptyState];
+    [self.tableView reloadData];
+    [self notifyContentChanged];
 }
 
 - (void)cancelActiveSearch {
@@ -100,33 +153,29 @@
     // repopulate the table on the next activation.
     [self cancelActiveSearch];
     self.activeQuery = @"";
-    self.results = @[];
-    [self updateEmptyState];
-    [self.tableView reloadData];
+    [self applyResults:@[]];
 }
 
-#pragma mark - UISearchResultsUpdating
+#pragma mark - Live query
 
-- (void)updateSearchResultsForSearchController:(UISearchController *)searchController {
-    NSString *query = searchController.searchBar.text ?: @"";
+- (void)updateSearchResultsForQuery:(NSString *)query {
+    NSString *safeQuery = query ?: @"";
 
     // Any keystroke supersedes the previous request.
     [self cancelActiveSearch];
 
-    if (query.length < 3) {
-        self.activeQuery = query;
-        self.results = @[];
-        [self updateEmptyState];
-        [self.tableView reloadData];
+    if (!GPSLabSearchQueryIsSearchable((size_t)safeQuery.length)) {
+        self.activeQuery = safeQuery;
+        [self applyResults:@[]];
         return;
     }
-    if ([query isEqualToString:self.activeQuery] && self.results.count > 0) {
+    if ([safeQuery isEqualToString:self.activeQuery] && self.results.count > 0) {
         return;
     }
-    self.activeQuery = query;
+    self.activeQuery = safeQuery;
 
     NSUInteger generation = self.searchGeneration;
-    NSString *expectedQuery = [query copy];
+    NSString *expectedQuery = [safeQuery copy];
 
     // MKLocalSearchRequest/Response are soft-deprecated in favor of the
     // MKLocalSearch.Request/Response pair on newer SDKs; the older spellings are
@@ -134,7 +183,7 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
     MKLocalSearchRequest *request = [[MKLocalSearchRequest alloc] init];
-    request.naturalLanguageQuery = query;
+    request.naturalLanguageQuery = safeQuery;
 
     MKLocalSearch *search = [[MKLocalSearch alloc] initWithRequest:request];
     self.activeSearch = search;
@@ -157,12 +206,10 @@
 
         if (error != nil) {
             [GPSLabStatusLog append:@"Search failed"];
-            strongSelf.results = @[];
+            [strongSelf applyResults:@[]];
         } else {
-            strongSelf.results = response.mapItems ?: @[];
+            [strongSelf applyResults:response.mapItems ?: @[]];
         }
-        [strongSelf updateEmptyState];
-        [strongSelf.tableView reloadData];
     }];
 #pragma clang diagnostic pop
 }
