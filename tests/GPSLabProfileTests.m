@@ -15,6 +15,8 @@
 
 #import <Foundation/Foundation.h>
 
+#include <math.h>
+
 #import "GPSLabProfile.h"
 #import "GPSLabProfileStore.h"
 
@@ -415,11 +417,48 @@ static void test_is_valid_for_application(void) {
                                                               schedule:nil];
     CHECK(![nilRoute isValidForApplication], @"route with nil route fails preflight");
 
+    // Parser canonicalization: a static entry that carries a route payload is
+    // accepted and the irrelevant route block is dropped (never an active route).
     NSMutableDictionary *staticWithRoute = [ValidProfileDictionary(@"s", @"S") mutableCopy];
     staticWithRoute[@"route"] = ValidRouteDictionary();
     GPSLabProfile *parsed = [GPSLabProfile profileFromDictionary:staticWithRoute];
-    CHECK(parsed == nil || ![parsed isValidForApplication],
-          @"static profile carrying a route is rejected");
+    CHECK(parsed != nil, @"static entry with a route payload parses");
+    CHECK(parsed.route == nil, @"parser drops the irrelevant route block for static");
+    CHECK([parsed isValidForApplication], @"canonicalized static profile passes preflight");
+
+    // Canonical round-trip keeps identifier/coordinates and stays route-free.
+    NSDictionary *round = [parsed dictionaryRepresentation];
+    GPSLabProfile *again = [GPSLabProfile profileFromDictionary:round];
+    CHECK(again != nil, @"canonical round-trip parses");
+    CHECK([again.identifier isEqualToString:@"s"], @"round-trip keeps the identifier");
+    CHECK(fabs(again.latitude - 24.7136) < 1e-9 && fabs(again.longitude - 46.6753) < 1e-9,
+          @"round-trip keeps the coordinates");
+    CHECK(round[@"route"] == nil, @"canonical representation has no route block");
+
+    // The type guard rejects a typed static profile that still carries a route.
+    GPSLabProfileRoute *route = [[GPSLabProfileRoute alloc] initWithStartLatitude:24.7136
+                                                                    startLongitude:46.6753
+                                                                      endLatitude:24.7749
+                                                                    endLongitude:46.7386
+                                                                          altitude:612.0
+                                                                           heading:-1.0
+                                                                              mode:GPSLabRouteModeDriving
+                                                                    customSpeedKmh:50.0];
+    GPSLabProfile *typedStaticWithRoute = [[GPSLabProfile alloc] initWithIdentifier:@"ts"
+                                                                               name:@"TS"
+                                                                       locationMode:GPSLabProfileLocationStatic
+                                                                          latitude:24.7136
+                                                                         longitude:46.6753
+                                                                          altitude:612.0
+                                                                           heading:-1.0
+                                                                      driftEnabled:NO
+                                                                 driftRadiusMeters:30.0
+                                                                             route:route
+                                                                              wifi:nil
+                                                                         bluetooth:nil
+                                                                          schedule:nil];
+    CHECK(![typedStaticWithRoute isValidForApplication],
+          @"typed static profile carrying a route fails preflight");
 }
 
 int main(void) {

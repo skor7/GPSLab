@@ -5,8 +5,6 @@
 
 #import "GPSLabScheduler.h"
 
-#import <UIKit/UIKit.h>
-
 #import "GPSLabProfileCore.h"
 #import "GPSLabSchedulerCore.h"
 
@@ -74,23 +72,9 @@
         return;
     }
     _observing = YES;
-    NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
-    [center addObserver:self
-               selector:@selector(noteForegroundChanged)
-                   name:UIApplicationDidBecomeActiveNotification
-                 object:nil];
-    [center addObserver:self
-               selector:@selector(handleDidEnterBackground:)
-                   name:UIApplicationDidEnterBackgroundNotification
-                 object:nil];
-    // Engine/license observation lives in the host (which owns those symbols).
+    // ALL platform/engine/license observation lives in the injected host, so this
+    // Foundation-only core has no UIKit or engine/license dependency.
     [_host schedulerStartObserving];
-}
-
-- (void)handleDidEnterBackground:(NSNotification *)notification {
-    (void)notification;
-    // Suspend while backgrounded; re-evaluated on activation.
-    [self cancelTimer];
 }
 
 - (void)noteForegroundChanged {

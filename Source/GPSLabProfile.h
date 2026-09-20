@@ -131,7 +131,12 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly, nullable) GPSLabProfileBluetoothConfig *bluetooth;
 @property (nonatomic, readonly, nullable) GPSLabProfileSchedule *schedule;
 
-/** Parses one persisted entry. Returns nil for any malformed/invalid value. */
+/**
+ * Parses one persisted entry. Returns nil for any malformed/invalid value.
+ * Canonicalization: a static entry's `route` payload is ignored and dropped
+ * (there is no active route); a route entry with a missing/invalid route block
+ * is rejected.
+ */
 + (nullable instancetype)profileFromDictionary:(NSDictionary *)dictionary;
 
 - (instancetype)initWithIdentifier:(NSString *)identifier

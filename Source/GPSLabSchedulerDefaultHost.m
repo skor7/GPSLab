@@ -15,6 +15,11 @@
 @implementation GPSLabSchedulerDefaultHost {
     dispatch_source_t _timer;
     NSUInteger _hostGeneration;
+    BOOL _observing;
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 
 - (long long)schedulerNowSeconds {
@@ -102,7 +107,19 @@
 }
 
 - (void)schedulerStartObserving {
+    if (_observing) {
+        return;
+    }
+    _observing = YES;
     NSNotificationCenter *center = [NSNotificationCenter defaultCenter];
+    [center addObserver:self
+               selector:@selector(applicationDidBecomeActive:)
+                   name:UIApplicationDidBecomeActiveNotification
+                 object:nil];
+    [center addObserver:self
+               selector:@selector(applicationDidEnterBackground:)
+                   name:UIApplicationDidEnterBackgroundNotification
+                 object:nil];
     [center addObserver:self
                selector:@selector(engineStateDidChange:)
                    name:GPSLabEngineStateDidChangeNotification
@@ -111,6 +128,18 @@
                selector:@selector(licenseStateDidChange:)
                    name:GPSLabLicenseStateDidChangeNotification
                  object:nil];
+}
+
+- (void)applicationDidBecomeActive:(NSNotification *)notification {
+    (void)notification;
+    [self.scheduler noteForegroundChanged];
+}
+
+- (void)applicationDidEnterBackground:(NSNotification *)notification {
+    (void)notification;
+    // Immediate cancel; the scheduler re-evaluates on activation (evaluate sees
+    // a non-foreground host and clears the timer).
+    [self.scheduler noteForegroundChanged];
 }
 
 - (void)engineStateDidChange:(NSNotification *)notification {

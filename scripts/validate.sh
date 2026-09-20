@@ -387,7 +387,7 @@ grep -q -F "GPSLabSchedulerNextAction" "$SOURCE_DIR/GPSLabScheduler.m" \
     || fail "scheduler must use the pure C decision core"
 grep -q -F "handleTimerGeneration" "$SOURCE_DIR/GPSLabScheduler.m" \
     || fail "scheduler must guard stale timer wakes with a generation"
-grep -q -F "UIApplicationDidEnterBackgroundNotification" "$SOURCE_DIR/GPSLabScheduler.m" \
+grep -q -F "UIApplicationDidEnterBackgroundNotification" "$SOURCE_DIR/GPSLabSchedulerDefaultHost.m" \
     || fail "scheduler must suspend its timer in the background"
 if grep -q -F "setEnabledAndNotify:YES" "$SOURCE_DIR/GPSLabScheduler.m" \
         "$SOURCE_DIR/GPSLabSchedulerDefaultHost.m" >/dev/null 2>&1; then
