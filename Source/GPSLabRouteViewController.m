@@ -4,12 +4,13 @@
 //
 //  Route controls. The engine remains the single source of truth; this sheet only
 //  reads state, drives the existing start/pause/resume/stop API and asks the canvas
-//  to pick map endpoints.
+//  to pick map endpoints. Only GPSLab UI strings are localized.
 //
 
 #import "GPSLabRouteViewController.h"
 
 #import "GPSLabEngine.h"
+#import "GPSLabLocalization.h"
 #import "GPSLabTypes.h"
 
 @implementation GPSLabRouteViewController {
@@ -21,77 +22,115 @@
     UIProgressView *_progressView;
     UILabel *_statusLabel;
     NSTimer *_statusTimer;
+
+    UILabel *_modeHeader;
+    UILabel *_endpointsHeader;
+    UILabel *_playbackHeader;
+    UILabel *_onStopHeader;
+    UILabel *_speedsLabel;
+    UIButton *_setStartButton;
+    UIButton *_setEndButton;
+    UIButton *_playButton;
+    UIButton *_pauseButton;
+    UIButton *_stopButton;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Route";
 
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
 
-    _modeControl = [[UISegmentedControl alloc] initWithItems:@[
-        GPSLabRouteModeName(GPSLabRouteModeDriving),
-        GPSLabRouteModeName(GPSLabRouteModeWalking),
-        GPSLabRouteModeName(GPSLabRouteModeCycling),
-        GPSLabRouteModeName(GPSLabRouteModeCustom),
-    ]];
+    _modeControl = [[UISegmentedControl alloc] initWithItems:@[@"", @"", @"", @""]];
     _modeControl.selectedSegmentIndex = configuration.routeMode;
     [_modeControl addTarget:self action:@selector(modeChanged) forControlEvents:UIControlEventValueChanged];
 
-    _customSpeedField = [self decimalFieldWithPlaceholder:@"Custom speed (km/h)"];
+    _customSpeedField = [self decimalFieldWithPlaceholder:@""];
     _customSpeedField.keyboardType = UIKeyboardTypeDecimalPad;
     _customSpeedField.text = [NSString stringWithFormat:@"%.1f", configuration.routeCustomSpeedKmh];
 
-    _stopBehaviorControl = [[UISegmentedControl alloc] initWithItems:@[
-        GPSLabStopBehaviorName(GPSLabStopBehaviorStayAtCurrent),
-        GPSLabStopBehaviorName(GPSLabStopBehaviorReturnToStart),
-    ]];
+    _stopBehaviorControl = [[UISegmentedControl alloc] initWithItems:@[@"", @""]];
     _stopBehaviorControl.selectedSegmentIndex = configuration.stopBehavior;
     [_stopBehaviorControl addTarget:self
                              action:@selector(stopBehaviorChanged)
                    forControlEvents:UIControlEventValueChanged];
 
-    UIButton *setStart = [self actionButtonWithTitle:@"Set start on map" action:@selector(pickStartTapped)];
-    UIButton *setEnd = [self actionButtonWithTitle:@"Set end on map" action:@selector(pickEndTapped)];
-    _startLabel = [self bodyLabel:@"Start: not set"];
-    _endLabel = [self bodyLabel:@"End: not set"];
+    _setStartButton = [self actionButtonWithTitle:@"" action:@selector(pickStartTapped)];
+    _setEndButton = [self actionButtonWithTitle:@"" action:@selector(pickEndTapped)];
+    _startLabel = [self bodyLabel:@""];
+    _endLabel = [self bodyLabel:@""];
     _startLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
     _endLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
     _startLabel.textColor = UIColor.secondaryLabelColor;
     _endLabel.textColor = UIColor.secondaryLabelColor;
 
-    UIButton *play = [self actionButtonWithTitle:@"Start route" action:@selector(startTapped)];
-    UIButton *pause = [self actionButtonWithTitle:@"Pause / Resume" action:@selector(pauseTapped)];
-    UIButton *stop = [self actionButtonWithTitle:@"Stop route" action:@selector(stopTapped)];
+    _playButton = [self actionButtonWithTitle:@"" action:@selector(startTapped)];
+    _pauseButton = [self actionButtonWithTitle:@"" action:@selector(pauseTapped)];
+    _stopButton = [self actionButtonWithTitle:@"" action:@selector(stopTapped)];
 
     _progressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
-    _statusLabel = [self bodyLabel:@"Idle"];
+    _statusLabel = [self bodyLabel:@""];
     _statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleCaption1];
     _statusLabel.textColor = UIColor.secondaryLabelColor;
 
+    _modeHeader = [self sectionHeaderLabel:@""];
+    _endpointsHeader = [self sectionHeaderLabel:@""];
+    _playbackHeader = [self sectionHeaderLabel:@""];
+    _onStopHeader = [self sectionHeaderLabel:@""];
+    _speedsLabel = [self bodyLabel:@""];
+
     UIStackView *content = self.contentStack;
-    [content addArrangedSubview:[self sectionHeaderLabel:@"Mode"]];
+    [content addArrangedSubview:_modeHeader];
     [content addArrangedSubview:_modeControl];
-    [content addArrangedSubview:[self bodyLabel:@"Speeds: Walking 5 | Cycling 15 | Driving 50 km/h. "
-                                               @"Custom uses the value below."]];
+    [content addArrangedSubview:_speedsLabel];
     [content addArrangedSubview:_customSpeedField];
-    [content addArrangedSubview:[self sectionHeaderLabel:@"Endpoints"]];
-    [content addArrangedSubview:setStart];
-    [content addArrangedSubview:setEnd];
+    [content addArrangedSubview:_endpointsHeader];
+    [content addArrangedSubview:_setStartButton];
+    [content addArrangedSubview:_setEndButton];
     [content addArrangedSubview:_startLabel];
     [content addArrangedSubview:_endLabel];
-    [content addArrangedSubview:[self sectionHeaderLabel:@"Playback"]];
-    [content addArrangedSubview:play];
-    [content addArrangedSubview:pause];
-    [content addArrangedSubview:stop];
+    [content addArrangedSubview:_playbackHeader];
+    [content addArrangedSubview:_playButton];
+    [content addArrangedSubview:_pauseButton];
+    [content addArrangedSubview:_stopButton];
     [content addArrangedSubview:_progressView];
     [content addArrangedSubview:_statusLabel];
-    [content addArrangedSubview:[self sectionHeaderLabel:@"On stop"]];
+    [content addArrangedSubview:_onStopHeader];
     [content addArrangedSubview:_stopBehaviorControl];
 
-    [self updateEndpointLabels];
+    [self gpslab_applyLocalization];
     [self refreshFromEngine];
     [self updateCustomSpeedEnabled];
+}
+
+#pragma mark - Localization
+
+- (void)gpslab_applyLocalization {
+    self.title = GPSLabLocalized(@"route.title");
+    if (_modeControl.numberOfSegments >= 4) {
+        [_modeControl setTitle:GPSLabLocalized(@"route.mode.driving") forSegmentAtIndex:0];
+        [_modeControl setTitle:GPSLabLocalized(@"route.mode.walking") forSegmentAtIndex:1];
+        [_modeControl setTitle:GPSLabLocalized(@"route.mode.cycling") forSegmentAtIndex:2];
+        [_modeControl setTitle:GPSLabLocalized(@"route.mode.custom") forSegmentAtIndex:3];
+    }
+    if (_stopBehaviorControl.numberOfSegments >= 2) {
+        [_stopBehaviorControl setTitle:GPSLabLocalized(@"route.stop.stay") forSegmentAtIndex:0];
+        [_stopBehaviorControl setTitle:GPSLabLocalized(@"route.stop.return") forSegmentAtIndex:1];
+    }
+    _customSpeedField.placeholder = GPSLabLocalized(@"route.customSpeed");
+    _modeHeader.text = GPSLabLocalized(@"route.section.mode");
+    _endpointsHeader.text = GPSLabLocalized(@"route.section.endpoints");
+    _playbackHeader.text = GPSLabLocalized(@"route.section.playback");
+    _onStopHeader.text = GPSLabLocalized(@"route.section.onStop");
+    _speedsLabel.text = GPSLabLocalized(@"route.speedsInfo");
+    [_setStartButton setTitle:GPSLabLocalized(@"route.setStart") forState:UIControlStateNormal];
+    [_setEndButton setTitle:GPSLabLocalized(@"route.setEnd") forState:UIControlStateNormal];
+    [_playButton setTitle:GPSLabLocalized(@"route.start") forState:UIControlStateNormal];
+    [_pauseButton setTitle:GPSLabLocalized(@"route.pauseResume") forState:UIControlStateNormal];
+    [_stopButton setTitle:GPSLabLocalized(@"route.stop") forState:UIControlStateNormal];
+
+    [GPSLabLocalization applyLanguageAttributesToView:self.view];
+    [self updateEndpointLabels];
+    [self refreshFromEngine];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -121,16 +160,22 @@
 }
 
 - (void)updateEndpointLabels {
-    _startLabel.text = [self labelTextForItem:self.startItem prefix:@"Start: "];
-    _endLabel.text = [self labelTextForItem:self.endItem prefix:@"End: "];
+    _startLabel.text = [self labelTextForItem:self.startItem start:YES];
+    _endLabel.text = [self labelTextForItem:self.endItem start:NO];
 }
 
-- (NSString *)labelTextForItem:(MKMapItem *)item prefix:(NSString *)prefix {
+- (NSString *)labelTextForItem:(MKMapItem *)item start:(BOOL)isStart {
     if (item == nil) {
-        return [prefix stringByAppendingString:@"not set"];
+        return isStart ? GPSLabLocalized(@"route.startLabel") : GPSLabLocalized(@"route.endLabel");
     }
     CLLocationCoordinate2D coordinate = item.placemark.coordinate;
-    return [NSString stringWithFormat:@"%@%.5f, %.5f", prefix, coordinate.latitude, coordinate.longitude];
+    NSString *latitude = [GPSLabLocalization decimalString:coordinate.latitude fractionDigits:5];
+    NSString *longitude = [GPSLabLocalization decimalString:coordinate.longitude fractionDigits:5];
+    NSString *coordinates = [NSString stringWithFormat:@"%@, %@", latitude, longitude];
+    NSString *format = isStart ? GPSLabLocalized(@"route.startLabel.format")
+                               : GPSLabLocalized(@"route.endLabel.format");
+    NSString *text = [NSString stringWithFormat:format, coordinates];
+    return text;
 }
 
 - (void)pickStartTapped {
@@ -172,13 +217,16 @@
 
 - (void)startTapped {
     if (self.startItem == nil || self.endItem == nil) {
-        [self showAlertWithTitle:@"Route incomplete" message:@"Set both a start and an end point first."];
+        [self showAlertWithTitle:GPSLabLocalized(@"route.incomplete.title")
+                         message:GPSLabLocalized(@"route.incomplete.message")];
         return;
     }
 
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
-    double customSpeed = [_customSpeedField.text doubleValue];
-    if (customSpeed > 0.0) {
+    double customSpeed = 0.0;
+    if (_customSpeedField.text.length > 0 &&
+        [GPSLabLocalization parseNumber:_customSpeedField.text value:&customSpeed] &&
+        customSpeed > 0.0) {
         configuration.routeCustomSpeedKmh = customSpeed;
     }
 
@@ -193,7 +241,8 @@
             return;
         }
         if (error != nil) {
-            [strongSelf showAlertWithTitle:@"Route failed" message:error.localizedDescription];
+            [strongSelf showAlertWithTitle:GPSLabLocalized(@"route.failed.title")
+                                   message:error.localizedDescription];
         }
         [strongSelf refreshFromEngine];
         if (strongSelf.routeChangedHandler != nil) {
@@ -233,8 +282,8 @@
     }
     GPSLabRouteViewController *__weak weakSelf = self;
     _statusTimer = [NSTimer scheduledTimerWithTimeInterval:0.5
-                                                  repeats:YES
-                                                    block:^(NSTimer *timer) {
+                                                   repeats:YES
+                                                     block:^(NSTimer *timer) {
         (void)timer;
         [weakSelf refreshFromEngine];
     }];
@@ -253,16 +302,19 @@
 
     _progressView.progress = (float)[simulator progress];
 
-    NSString *stateName = @"Idle";
+    NSString *stateName = GPSLabLocalized(@"route.state.idle");
     if ([simulator isLoading]) {
-        stateName = @"Loading route";
+        stateName = GPSLabLocalized(@"route.state.loading");
     } else if (state == GPSLabRouteStatePlaying) {
-        stateName = @"Playing";
+        stateName = GPSLabLocalized(@"route.state.playing");
     } else if (state == GPSLabRouteStatePaused) {
-        stateName = @"Paused";
+        stateName = GPSLabLocalized(@"route.state.paused");
     }
-    _statusLabel.text = [NSString stringWithFormat:@"%@  %.0f m  %.0f%%",
-                         stateName, [simulator totalDistanceMeters], [simulator progress] * 100.0];
+    NSString *format = GPSLabLocalized(@"route.status.format");
+    _statusLabel.text = [NSString stringWithFormat:format,
+                         stateName,
+                         [simulator totalDistanceMeters],
+                         [simulator progress] * 100.0];
 }
 
 @end

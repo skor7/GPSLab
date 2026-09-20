@@ -41,6 +41,9 @@ FOUNDATION_EXPORT UINavigationController *GPSLabSheetNavigationController(UIView
 /** Presents a validation alert on top of the sheet. */
 - (void)showAlertWithTitle:(NSString *)title message:(NSString *)message;
 
+/** Subclasses override to (re)apply their catalog strings; called on load and on language change. */
+- (void)gpslab_applyLocalization;
+
 @end
 
 NS_ASSUME_NONNULL_END

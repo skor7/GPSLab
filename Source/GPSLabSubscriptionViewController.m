@@ -3,7 +3,9 @@
 //  GPSLab
 //
 //  Fail-closed subscription screen. Actions are only enabled when their prerequisite
-//  (endpoint/public key/sign-in URL/manage URL) is actually configured.
+//  (endpoint/public key/sign-in URL/manage URL) is actually configured. This class
+//  only changes the displayed strings; the entitlement states, activation behavior,
+//  service gate and network flow are untouched.
 //
 
 #import "GPSLabSubscriptionViewController.h"
@@ -11,6 +13,7 @@
 #import "GPSLabEntitlement.h"
 #import "GPSLabLicenseConfig.h"
 #import "GPSLabLicenseManager.h"
+#import "GPSLabLocalization.h"
 #import "GPSLabOverlayPresenter.h"
 
 @interface GPSLabSubscriptionViewController ()
@@ -24,6 +27,7 @@
 @property (nonatomic, strong) UIButton *restoreButton;
 @property (nonatomic, strong) UIButton *tryAgainButton;
 @property (nonatomic, strong) UIButton *manageButton;
+@property (nonatomic, strong) UIButton *closeButton;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @end
 
@@ -69,17 +73,16 @@
     self.spinner.hidesWhenStopped = YES;
 
     self.codeField = [[UITextField alloc] initWithFrame:CGRectZero];
-    self.codeField.placeholder = @"Activation code";
     self.codeField.borderStyle = UITextBorderStyleRoundedRect;
     self.codeField.autocorrectionType = UITextAutocorrectionTypeNo;
     self.codeField.autocapitalizationType = UITextAutocapitalizationTypeNone;
     self.codeField.clearButtonMode = UITextFieldViewModeWhileEditing;
 
-    self.activateButton = [self filledButtonWithTitle:@"Activate" action:@selector(activateTapped)];
-    self.signInButton = [self plainButtonWithTitle:@"Sign In" action:@selector(signInTapped)];
-    self.restoreButton = [self plainButtonWithTitle:@"Restore" action:@selector(restoreTapped)];
-    self.tryAgainButton = [self plainButtonWithTitle:@"Try Again" action:@selector(tryAgainTapped)];
-    self.manageButton = [self plainButtonWithTitle:@"Manage Account" action:@selector(manageTapped)];
+    self.activateButton = [self filledButtonWithTitle:@"" action:@selector(activateTapped)];
+    self.signInButton = [self plainButtonWithTitle:@"" action:@selector(signInTapped)];
+    self.restoreButton = [self plainButtonWithTitle:@"" action:@selector(restoreTapped)];
+    self.tryAgainButton = [self plainButtonWithTitle:@"" action:@selector(tryAgainTapped)];
+    self.manageButton = [self plainButtonWithTitle:@"" action:@selector(manageTapped)];
 
     self.feedbackLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     self.feedbackLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
@@ -87,8 +90,8 @@
     self.feedbackLabel.textColor = UIColor.secondaryLabelColor;
     self.feedbackLabel.numberOfLines = 0;
 
-    UIButton *close = [self plainButtonWithTitle:@"Close" action:@selector(closeTapped)];
-    close.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
+    self.closeButton = [self plainButtonWithTitle:@"" action:@selector(closeTapped)];
+    self.closeButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
 
     [stack addArrangedSubview:title];
     [stack addArrangedSubview:self.statusLabel];
@@ -102,7 +105,7 @@
     [stack addArrangedSubview:self.tryAgainButton];
     [stack addArrangedSubview:self.manageButton];
     [stack addArrangedSubview:self.feedbackLabel];
-    [stack addArrangedSubview:close];
+    [stack addArrangedSubview:self.closeButton];
 
     UILayoutGuide *safeArea = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
@@ -122,7 +125,11 @@
                                              selector:@selector(licenseStateDidChange:)
                                                  name:GPSLabLicenseStateDidChangeNotification
                                                object:nil];
-    [self refreshUI];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(languageDidChange:)
+                                                 name:GPSLabLanguageDidChangeNotification
+                                               object:nil];
+    [self applyLocalization];
 }
 
 - (void)dealloc {
@@ -132,6 +139,62 @@
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self refreshUI];
+}
+
+#pragma mark - Localization
+
+- (void)languageDidChange:(NSNotification *)notification {
+    (void)notification;
+    [self applyLocalization];
+}
+
+- (void)applyLocalization {
+    [self.activateButton setTitle:GPSLabLocalized(@"subscription.activate") forState:UIControlStateNormal];
+    [self.signInButton setTitle:GPSLabLocalized(@"subscription.signIn") forState:UIControlStateNormal];
+    [self.restoreButton setTitle:GPSLabLocalized(@"subscription.restore") forState:UIControlStateNormal];
+    [self.tryAgainButton setTitle:GPSLabLocalized(@"subscription.tryAgain") forState:UIControlStateNormal];
+    [self.manageButton setTitle:GPSLabLocalized(@"subscription.manage") forState:UIControlStateNormal];
+    [self.closeButton setTitle:GPSLabLocalized(@"common.close") forState:UIControlStateNormal];
+    self.codeField.placeholder = GPSLabLocalized(@"subscription.codePlaceholder");
+    [GPSLabLocalization applyLanguageAttributesToView:self.view];
+    [self refreshUI];
+}
+
+- (NSString *)localizedStatusForState:(GPSLabEntitlementState)state
+                          entitlement:(GPSLabEntitlement *)entitlement {
+    switch (state) {
+        case GPSLabEntitlementStateActive:
+            if (entitlement.plan.length > 0) {
+                return [NSString stringWithFormat:GPSLabLocalized(@"subscription.status.activeWithPlan"),
+                        entitlement.plan];
+            }
+            return GPSLabLocalized(@"subscription.status.active");
+        case GPSLabEntitlementStateGrace:
+            return GPSLabLocalized(@"subscription.status.grace");
+        case GPSLabEntitlementStateExpired:
+            return GPSLabLocalized(@"subscription.status.expired");
+        case GPSLabEntitlementStateInvalid:
+            return GPSLabLocalized(@"subscription.status.invalid");
+        case GPSLabEntitlementStateOffline:
+            return GPSLabLocalized(@"subscription.status.offline");
+        case GPSLabEntitlementStateChecking:
+            return GPSLabLocalized(@"subscription.status.checking");
+        case GPSLabEntitlementStateUnknown:
+        default:
+            return GPSLabLocalized(@"subscription.status.unknown");
+    }
+}
+
+- (NSDateFormatter *)localizedExpiryFormatter {
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    // Explicit GPSLab-only locale; never the host default.
+    NSString *identifier = ([GPSLabLocalization currentLanguage] == GPSLabLanguageEnglish)
+        ? @"en_US"
+        : @"ar";
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:identifier];
+    formatter.dateStyle = NSDateFormatterMediumStyle;
+    formatter.timeStyle = NSDateFormatterShortStyle;
+    return formatter;
 }
 
 #pragma mark - Buttons
@@ -163,10 +226,10 @@
 
 - (void)activateTapped {
     if (![[GPSLabLicenseManager sharedManager] isServiceConfigured]) {
-        self.feedbackLabel.text = @"Activation is not available in this build.";
+        self.feedbackLabel.text = GPSLabLocalized(@"subscription.activationUnavailable");
         return;
     }
-    self.feedbackLabel.text = @"Activating...";
+    self.feedbackLabel.text = GPSLabLocalized(@"subscription.activating");
     [self setBusy:YES];
     GPSLabSubscriptionViewController *__weak weakSelf = self;
     [[GPSLabLicenseManager sharedManager] activateWithCode:self.codeField.text
@@ -181,7 +244,7 @@
 - (void)signInTapped {
     NSURL *url = [GPSLabLicenseConfig sharedConfig].signInURL;
     if (url == nil) {
-        self.feedbackLabel.text = @"Sign in is not available in this build.";
+        self.feedbackLabel.text = GPSLabLocalized(@"subscription.signInUnavailable");
         return;
     }
     [self openExternalURL:url];
@@ -190,7 +253,7 @@
 - (void)manageTapped {
     NSURL *url = [GPSLabLicenseConfig sharedConfig].manageAccountURL;
     if (url == nil) {
-        self.feedbackLabel.text = @"Account management is not available in this build.";
+        self.feedbackLabel.text = GPSLabLocalized(@"subscription.manageUnavailable");
         return;
     }
     [self openExternalURL:url];
@@ -198,10 +261,10 @@
 
 - (void)restoreTapped {
     if (![[GPSLabLicenseManager sharedManager] isServiceConfigured]) {
-        self.feedbackLabel.text = @"Restore is not available in this build.";
+        self.feedbackLabel.text = GPSLabLocalized(@"subscription.restoreUnavailable");
         return;
     }
-    self.feedbackLabel.text = @"Restoring...";
+    self.feedbackLabel.text = GPSLabLocalized(@"subscription.restoring");
     [self setBusy:YES];
     GPSLabSubscriptionViewController *__weak weakSelf = self;
     [[GPSLabLicenseManager sharedManager] restoreWithCompletion:^(GPSLabEntitlementState state, NSString *message) {
@@ -214,10 +277,10 @@
 
 - (void)tryAgainTapped {
     if (![[GPSLabLicenseManager sharedManager] isServiceConfigured]) {
-        self.feedbackLabel.text = @"Retry is not available in this build.";
+        self.feedbackLabel.text = GPSLabLocalized(@"subscription.retryUnavailable");
         return;
     }
-    self.feedbackLabel.text = @"Checking...";
+    self.feedbackLabel.text = GPSLabLocalized(@"subscription.checkingNow");
     [self setBusy:YES];
     GPSLabSubscriptionViewController *__weak weakSelf = self;
     [[GPSLabLicenseManager sharedManager] refreshWithCompletion:^(GPSLabEntitlementState state) {
@@ -256,27 +319,27 @@
     GPSLabEntitlementState state = [manager state];
     GPSLabEntitlement *entitlement = [manager currentEntitlement];
 
-    self.statusLabel.text = [manager nonTechnicalServiceStatus];
+    // UI-only mapping of the existing state enum; behavior is unchanged.
+    self.statusLabel.text = [self localizedStatusForState:state entitlement:entitlement];
     self.planLabel.text = entitlement.plan.length > 0
-        ? [NSString stringWithFormat:@"Plan: %@", entitlement.plan]
-        : @"Plan: -";
+        ? [NSString stringWithFormat:GPSLabLocalized(@"subscription.plan.format"), entitlement.plan]
+        : GPSLabLocalized(@"subscription.plan.none");
 
     NSMutableArray<NSString *> *details = [NSMutableArray array];
     if (entitlement.expiresAt > 0) {
         NSDate *expiry = [NSDate dateWithTimeIntervalSince1970:(NSTimeInterval)entitlement.expiresAt];
-        NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
-        formatter.dateStyle = NSDateFormatterMediumStyle;
-        formatter.timeStyle = NSDateFormatterShortStyle;
-        [details addObject:[NSString stringWithFormat:@"Valid until %@", [formatter stringFromDate:expiry]]];
+        NSDateFormatter *formatter = [self localizedExpiryFormatter];
+        [details addObject:[NSString stringWithFormat:GPSLabLocalized(@"subscription.validUntil"),
+                            [formatter stringFromDate:expiry]]];
     }
     if (!configured) {
-        [details addObject:@"This build has no subscription service configured."];
+        [details addObject:GPSLabLocalized(@"subscription.noService")];
     }
     if (config.signInURL == nil) {
-        [details addObject:@"Sign in is unavailable in this build."];
+        [details addObject:GPSLabLocalized(@"subscription.noSignIn")];
     }
     if (config.manageAccountURL == nil) {
-        [details addObject:@"Account management is unavailable in this build."];
+        [details addObject:GPSLabLocalized(@"subscription.noManage")];
     }
     self.detailLabel.text = [details componentsJoinedByString:@"\n"];
 

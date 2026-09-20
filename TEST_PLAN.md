@@ -243,6 +243,55 @@ passed from CI alone.** All rows are device-manual.
 | 4.4.5 | Multi-scene: move the overlay between scenes while locked and unlocked. | The window is re-created on the active scene; root selection stays correct; no crash. |
 | 4.4.6 | Stream `os_log` through every subscription transition. | Only allow-listed events; license states are numeric; no ids, tokens or messages. |
 
+### 5. UI/locale device matrix (v3) — PENDING, device-only
+
+These rows cover the keyboard/presentation and localization work. CI proves the
+catalog, numeric normalization and persistence contract only; **every row below
+is device-manual and must be recorded as pending until run on hardware.**
+
+Clarified search-only root cause: Settings/Favorites present normally **before**
+search. Tapping Search starts a `UISearchController` session whose results
+presentation owns the layer above the canvas (the overlay window has no host
+navigation bar to host the search bar), so the search bar/keyboard and the map
+controls interact. The targeted fix keeps an explicit always-visible Cancel on
+the search bar, activates the controller only after editing begins, and cancels
+through the controller delegate. The lower rows (sheets, localization,
+lifecycle) are unchanged.
+
+| # | Steps | Expected |
+|---|-------|----------|
+| 5.1 | Fresh overlay; tap Settings, dismiss; tap Favorites, dismiss. | Both present and dismiss normally (baseline before search). |
+| 5.2 | Tap the search bar. | Keyboard appears; the GPSLab window owns input; typing filters results. |
+| 5.3 | While search is active, confirm the explicit Cancel is visible; tap it. | Search deactivates; the results layer is removed; map/header/floating controls return and are tappable. |
+| 5.4 | Repeat search; tap outside the results (map/header area). | Search deactivates (or the keyboard hides) without consuming map pan/zoom/drag. |
+| 5.5 | Repeat search; tap a result. | Anchor updates; search deactivates; map/controls return. |
+| 5.6 | After each search exit, tap Settings then Favorites again. | Both still present exactly once (regression check for the search session). |
+| 5.7 | With search active, tap a control if reachable. | Search ends first, then the requested sheet appears exactly once. |
+| 5.8 | Double-tap settings/favorites quickly. | Only one sheet is presented; no orphaned or stacked duplicate modal. |
+| 5.9 | Open Settings, Favorites, Recents, Manual, Fluctuation, Route in turn. | Each presents on the GPSLab window; nested confirm/rename alerts appear above their sheet. |
+| 5.10 | Dismiss every sheet and alert, then tap Close. | Overlay closes; the host app is fully interactive and its keyboard/gestures are restored. |
+| 5.11 | Open Settings → Manual while Settings is open. | Settings dismisses first, then Manual opens (no two sheets at once). |
+| 5.12 | Rotate the device with a sheet open. | Sheet and canvas reflow within the safe area; no clipping. |
+| 5.13 | Light/dark and Dynamic Type with a sheet open. | System materials/colors and text scaling apply; no clipping. |
+| 5.14 | First launch, no stored language, host device in any locale. | GPSLab UI is Arabic by default; host app language is unchanged. |
+| 5.15 | Switch language to English then back to Arabic in Settings. | All active GPSLab screens update immediately; no root rebuild; map position and unsaved form values are preserved. |
+| 5.16 | Relaunch after choosing a language. | The chosen language persists; the host app locale/appearance is never modified. |
+| 5.17 | Arabic UI. | RTL applies to nav bars, rows, alerts and sheets; coordinates, course, altitude and map geography stay LTR/Latin and the map is not mirrored. |
+| 5.18 | Manual entry with Arabic-Indic digits and the Arabic decimal separator. | Coordinates/altitude/course parse correctly; rounded corners and clamping unchanged. |
+| 5.19 | Manual entry with trailing garbage (e.g. "12abc") or "nan". | Rejected with the localized invalid-number alert; nothing changes. |
+| 5.20 | Favorites/recents coordinate rows and route status in Arabic. | Digits use Latin/POSIX format, values remain readable LTR. |
+| 5.21 | Locked session (no configured service). | Subscription screen strings are localized; activation/restore/sign-in behavior is byte-for-byte unchanged. |
+| 5.22 | Multi-scene: move the overlay between scenes while a sheet is open. | Window re-created on the active scene; no crash; key lease released/restored conservatively. |
+| 5.23 | Background the app with the overlay open, then foreground. | Host is not left behind a non-interactive window; tapping a GPSLab text field re-acquires the keyboard. |
+| 5.24 | `os_log` review through every UI/locale action. | Only allow-listed events; no coordinates, names, queries or tokens logged. |
+| 5.25 | In search, press the keyboard Search key. | The query runs, the keyboard hides, and Cancel stays visible; overlapping results never trap the user. |
+| 5.26 | Tap Cancel while results are still dismissing, then immediately tap Settings. | The sheet is deferred until search actually dismisses, then presents once from the canvas (never from the search controller). |
+| 5.27 | Rapidly tap Settings then Favorites while the first sheet animates in. | Exactly one sheet presents; the duplicate is dropped after the first settles (no faked completion, no orphan). |
+| 5.28 | Interactively pull a sheet down halfway, cancel it, then immediately open another. | The next sheet presents only after the interactive transition settles; no stuck busy state. |
+| 5.29 | Interactively pull a sheet down to dismiss, then immediately tap Settings. | One dismissal completes, then Settings presents from the canvas. |
+| 5.30 | Open Manual entry, focus a coordinate field, background the app, foreground it, focus the field again. | Field values are preserved; the keyboard appears again (key lease re-acquired on scene activation, host scope untouched). |
+| 5.31 | With a sheet open, swap the GPSLab root in place (entitlement transition). | Queued modal work from the old root is invalidated by the session generation; no stale sheet presents on the new root. |
+
 ## Pass/fail recording
 
 Record, per row: device model, iOS version, IPA variant ([Clean]/[Re-tested]),

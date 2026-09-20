@@ -13,14 +13,22 @@
 
 #import "Diagnostics.h"
 #import "GPSLabLicenseManager.h"
+#import "GPSLabLocalization.h"
+#import "GPSLabModalCoordinator.h"
 #import "GPSLabOverlayViewController.h"
 #import "GPSLabPrimaryInterface.h"
 #import "GPSLabSubscriptionViewController.h"
+
+// Defined below in the scene helpers; used by the key-window lease above it.
+static UIWindow *GPSLabKeyWindow(void);
 
 @interface GPSLabOverlayPresenter ()
 @property (nonatomic, strong, nullable) UIWindow *overlayWindow;
 @property (nonatomic, strong, nullable) UIViewController *primaryViewController;
 @property (nonatomic, assign, getter=isPresenting) BOOL presenting;
+// Scoped key-window lease: the host window captured when GPSLab first took key.
+@property (nonatomic, weak, nullable) UIWindow *previousKeyWindow;
+@property (nonatomic, assign, getter=isKeyLeaseActive) BOOL keyLeaseActive;
 @end
 @implementation GPSLabOverlayPresenter
 
@@ -42,6 +50,18 @@
                                                  selector:@selector(licenseStateDidChange:)
                                                      name:GPSLabLicenseStateDidChangeNotification
                                                    object:nil];
+        // Re-apply the GPSLab-only text direction when the UI language changes.
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(languageDidChange:)
+                                                     name:GPSLabLanguageDidChangeNotification
+                                                   object:nil];
+        // Re-acquire the key lease when a window scene becomes active again (the
+        // willEnterForeground notification can arrive while the scene is still
+        // inactive). Scoped to the overlay's own scene; never steals other scenes.
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(sceneDidActivate:)
+                                                     name:UISceneDidActivateNotification
+                                                   object:nil];
     }
     return self;
 }
@@ -53,6 +73,81 @@
 
 + (BOOL)isInstalled {
     return [self sharedPresenter] != nil;
+}
+
+#pragma mark - Accessors
+
+- (UIWindow *)hostWindow {
+    return self.overlayWindow;
+}
+
+- (UIViewController *)rootViewController {
+    return self.primaryViewController;
+}
+
+#pragma mark - Scoped key-window lease
+
+- (void)acquireKeyLease {
+    UIWindow *overlay = self.overlayWindow;
+    // Never unhide or re-key a hidden/orphaned overlay, and never take key while
+    // the overlay's scene is not the foreground-active one.
+    if (overlay == nil || overlay.isHidden || overlay.windowScene == nil) {
+        return;
+    }
+    if (overlay.windowScene.activationState != UISceneActivationStateForegroundActive) {
+        return;
+    }
+    if (overlay.isKeyWindow) {
+        self.keyLeaseActive = YES;
+        return;
+    }
+
+    // Capture the previous key window only when it shares the overlay's scene;
+    // a window from another scene must never be re-keyed.
+    UIWindow *current = GPSLabKeyWindow();
+    if (current != nil && current != overlay && current.windowScene == overlay.windowScene) {
+        self.previousKeyWindow = current;
+    }
+
+    [overlay makeKeyWindow];
+    self.keyLeaseActive = overlay.isKeyWindow;
+}
+
+- (void)releaseKeyLease {
+    UIWindow *overlay = self.overlayWindow;
+    UIWindow *previous = self.previousKeyWindow;
+    self.previousKeyWindow = nil;
+    self.keyLeaseActive = NO;
+
+    // Only restore when GPSLab still holds key; if another window became key we
+    // must not steal it back.
+    if (overlay == nil || previous == nil || !overlay.isKeyWindow) {
+        return;
+    }
+    if (previous.windowScene != overlay.windowScene) {
+        return;
+    }
+    if (previous.isHidden) {
+        return;
+    }
+    // Only a normal-level host window is a valid restore target.
+    if (previous.windowLevel != UIWindowLevelNormal) {
+        return;
+    }
+    [previous makeKeyWindow];
+}
+
+- (void)applyLanguageAttributes {
+    UIWindow *window = self.overlayWindow;
+    if (window == nil) {
+        return;
+    }
+    [GPSLabLocalization applyLanguageAttributesToView:window];
+}
+
+- (void)languageDidChange:(NSNotification *)notification {
+    (void)notification;
+    [self applyLanguageAttributes];
 }
 
 #pragma mark - Scene helpers
@@ -143,14 +238,21 @@ static UIWindow *GPSLabKeyWindow(void) {
 
     self.overlayWindow.hidden = NO;
     self.presenting = YES;
+    [[GPSLabModalCoordinator sharedCoordinator] noteSessionOpened];
+    [self applyLanguageAttributes];
+    [self acquireKeyLease];
     GPSLabDiagOverlayOpened();
 }
 
 - (void)dismissOverlay {
     if (self.overlayWindow == nil) {
+        [[GPSLabModalCoordinator sharedCoordinator] noteSessionClosed];
+        [self releaseKeyLease];
         self.presenting = NO;
         return;
     }
+    [[GPSLabModalCoordinator sharedCoordinator] noteSessionClosed];
+    [self releaseKeyLease];
     self.overlayWindow.hidden = YES;
     self.overlayWindow.rootViewController = nil;
     self.overlayWindow = nil;
@@ -185,11 +287,30 @@ static UIWindow *GPSLabKeyWindow(void) {
 }
 
 - (void)handleDidEnterBackground {
-    // The window stays alive but the UI is hidden by the system; nothing to do.
+    // The window stays alive but the UI is hidden by the system; drop the key
+    // lease so the host is not left behind a non-interactive GPSLab window.
+    [self releaseKeyLease];
 }
 
 - (void)handleWillEnterForeground {
     [self handleSceneChange];
+    // Only succeeds when the overlay's scene is already foreground-active; the
+    // windowSceneDidActivate observer covers the case where it is not yet.
+    [self acquireKeyLease];
+}
+
+- (void)sceneDidActivate:(NSNotification *)notification {
+    UIScene *scene = [notification.object isKindOfClass:[UIScene class]]
+        ? (UIScene *)notification.object
+        : nil;
+    if (scene == nil || !self.presenting) {
+        return;
+    }
+    UIWindow *overlay = self.overlayWindow;
+    if (overlay == nil || overlay.windowScene != scene) {
+        return;
+    }
+    [self acquireKeyLease];
 }
 
 #pragma mark - Entitlement transitions
@@ -210,7 +331,15 @@ static UIWindow *GPSLabKeyWindow(void) {
     } else if (!unlocked && showingCanvas) {
         self.overlayWindow.rootViewController = [[GPSLabSubscriptionViewController alloc] init];
         self.primaryViewController = self.overlayWindow.rootViewController;
+    } else {
+        return;
     }
+    // The root swap may have torn down the search/keyboard session; invalidate
+    // stale queued modal work, release the lease and re-apply the scoped text
+    // direction to the new subtree.
+    [[GPSLabModalCoordinator sharedCoordinator] invalidateForRootReplacement];
+    [self releaseKeyLease];
+    [self applyLanguageAttributes];
 }
 
 @end

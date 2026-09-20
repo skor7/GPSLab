@@ -21,7 +21,9 @@
 #import "GPSLabFluctuationViewController.h"
 #import "GPSLabGeodesy.h"
 #import "GPSLabLicenseManager.h"
+#import "GPSLabLocalization.h"
 #import "GPSLabManualEntryViewController.h"
+#import "GPSLabModalCoordinator.h"
 #import "GPSLabOptionsViewController.h"
 #import "GPSLabOverlayPresenter.h"
 #import "GPSLabRecentsViewController.h"
@@ -60,12 +62,21 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 @property (nonatomic, strong) UIVisualEffectView *headerView;
 @property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *enabledLabel;
 @property (nonatomic, strong) UISwitch *enabledSwitch;
+@property (nonatomic, strong) UIButton *headerSettingsButton;
+@property (nonatomic, strong) UIButton *headerCloseButton;
+@property (nonatomic, strong) NSArray<UIButton *> *controlButtons;
 @property (nonatomic, strong) UIVisualEffectView *searchBarContainer;
 @property (nonatomic, strong) UIStackView *controlsStack;
+@property (nonatomic, strong, nullable) UITapGestureRecognizer *outsideTapRecognizer;
+// YES from the moment deactivation is requested until didDismissSearchController.
+@property (nonatomic, assign) BOOL searchDismissing;
 
 @property (nonatomic, strong) UIVisualEffectView *pickBanner;
 @property (nonatomic, strong) UILabel *pickBannerLabel;
+@property (nonatomic, strong) UIButton *pickCancelButton;
 
 @property (nonatomic, strong) GPSLabSyntheticAnnotation *syntheticAnnotation;
 @property (nonatomic, strong, nullable) MKPointAnnotation *routeStartPin;
@@ -108,12 +119,23 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     [self buildSearchBar];
     [self buildControls];
     [self buildPickBanner];
+    [self installOutsideTapRecognizer];
     [self loadConfigurationIntoUI];
+    [self applyLocalization];
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(engineStateDidChange:)
                                                  name:GPSLabEngineStateDidChangeNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(languageDidChange:)
+                                                 name:GPSLabLanguageDidChangeNotification
+                                               object:nil];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self applyLocalization];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -158,7 +180,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     [mapView addGestureRecognizer:longPress];
 
     self.syntheticAnnotation = [[GPSLabSyntheticAnnotation alloc] init];
-    self.syntheticAnnotation.title = @"Synthetic";
+    self.syntheticAnnotation.title = GPSLabLocalized(@"overlay.annotation.synthetic");
     [mapView addAnnotation:self.syntheticAnnotation];
 
     // The map is a direct subview of the controller root and owns the remaining safe
@@ -186,23 +208,26 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.headerView = header;
 
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectZero];
-    title.text = @"GPSLab";
     title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle3];
     title.adjustsFontForContentSizeCategory = YES;
     [title setContentCompressionResistancePriority:UILayoutPriorityDefaultHigh forAxis:UILayoutConstraintAxisHorizontal];
+    self.titleLabel = title;
 
     UILabel *enabledLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    enabledLabel.text = @"Enabled";
     enabledLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
     enabledLabel.adjustsFontForContentSizeCategory = YES;
+    self.enabledLabel = enabledLabel;
 
     self.enabledSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
+    self.enabledSwitch.accessibilityLabel = GPSLabLocalized(@"overlay.enabled");
     [self.enabledSwitch addTarget:self
                            action:@selector(enabledChanged)
                  forControlEvents:UIControlEventValueChanged];
 
     UIButton *settingsButton = [self headerButtonWithSymbol:@"gearshape" action:@selector(settingsTapped)];
     UIButton *closeButton = [self headerButtonWithSymbol:@"xmark" action:@selector(closeTapped)];
+    self.headerSettingsButton = settingsButton;
+    self.headerCloseButton = closeButton;
 
     UIStackView *topRow = [[UIStackView alloc] initWithArrangedSubviews:@[
         title, [UIView new], enabledLabel, self.enabledSwitch, settingsButton, closeButton,
@@ -260,6 +285,9 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     results.selectionHandler = ^(MKMapItem *item) {
         [weakSelf applyMapItem:item];
     };
+    results.doneHandler = ^{
+        [weakSelf endActiveSearch];
+    };
     self.searchResultsController = results;
 
     UISearchController *search = [[UISearchController alloc] initWithSearchResultsController:results];
@@ -267,8 +295,13 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     search.delegate = self;
     search.obscuresBackgroundDuringPresentation = NO;
     search.hidesNavigationBarDuringPresentation = NO;
+    // The bar is embedded in a plain content view (no navigation bar to host it),
+    // so GPSLab drives the cancel button itself to guarantee a visible escape
+    // while the search results container is presented.
+    if (@available(iOS 13.0, *)) {
+        search.automaticallyShowsCancelButton = NO;
+    }
     search.searchBar.delegate = self;
-    search.searchBar.placeholder = @"Search address or place";
     search.searchBar.searchBarStyle = UISearchBarStyleMinimal;
     self.searchController = search;
 
@@ -299,12 +332,14 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 #pragma mark - Floating controls
 
 - (void)buildControls {
-    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[
-        [self circularButtonWithSymbol:@"location.fill" action:@selector(centerTapped)],
-        [self circularButtonWithSymbol:@"star" action:@selector(favoritesTapped)],
-        [self circularButtonWithSymbol:@"arrow.triangle.turn.up.right.diamond.fill" action:@selector(routeTapped)],
-        [self circularButtonWithSymbol:@"slider.horizontal.3" action:@selector(settingsTapped)],
-    ]];
+    UIButton *center = [self circularButtonWithSymbol:@"location.fill" action:@selector(centerTapped)];
+    UIButton *favorites = [self circularButtonWithSymbol:@"star" action:@selector(favoritesTapped)];
+    UIButton *route = [self circularButtonWithSymbol:@"arrow.triangle.turn.up.right.diamond.fill"
+                                              action:@selector(routeTapped)];
+    UIButton *options = [self circularButtonWithSymbol:@"slider.horizontal.3" action:@selector(settingsTapped)];
+    self.controlButtons = @[center, favorites, route, options];
+
+    UIStackView *stack = [[UIStackView alloc] initWithArrangedSubviews:@[center, favorites, route, options]];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     stack.axis = UILayoutConstraintAxisVertical;
     stack.spacing = 12.0;
@@ -354,9 +389,9 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.pickBannerLabel.numberOfLines = 0;
 
     UIButton *cancel = [UIButton buttonWithType:UIButtonTypeSystem];
-    [cancel setTitle:@"Cancel" forState:UIControlStateNormal];
     cancel.titleLabel.adjustsFontForContentSizeCategory = YES;
     [cancel addTarget:self action:@selector(cancelPicking) forControlEvents:UIControlEventTouchUpInside];
+    self.pickCancelButton = cancel;
 
     UIStackView *row = [[UIStackView alloc] initWithArrangedSubviews:@[self.pickBannerLabel, cancel]];
     row.axis = UILayoutConstraintAxisHorizontal;
@@ -385,8 +420,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         return;
     }
     self.pickBannerLabel.text = (self.pickMode == GPSLabMapPickModeRouteStart)
-        ? @"Tap the map to set the route start"
-        : @"Tap the map to set the route end";
+        ? GPSLabLocalized(@"overlay.pick.start")
+        : GPSLabLocalized(@"overlay.pick.end");
     self.pickBanner.hidden = NO;
 }
 
@@ -443,6 +478,107 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     }
 }
 
+#pragma mark - Localization
+
+- (BOOL)isSearchActive {
+    return self.searchController.isActive;
+}
+
+- (BOOL)isSearchSessionActive {
+    return self.searchController.isActive || self.searchDismissing;
+}
+
+- (void)deactivateSearch {
+    if (self.searchController == nil) {
+        return;
+    }
+    [self.searchResultsController cancelActiveSearch];
+    if (self.searchController.isActive) {
+        // Keep the Cancel escape visible until didDismiss confirms the session
+        // actually ended; the results layer can still be on screen meanwhile.
+        self.searchDismissing = YES;
+        [self.searchController setActive:NO];
+    } else {
+        self.searchDismissing = NO;
+    }
+}
+
+- (void)endActiveSearch {
+    [self.searchController.searchBar resignFirstResponder];
+    [self deactivateSearch];
+}
+
+- (void)languageDidChange:(NSNotification *)notification {
+    (void)notification;
+    [self applyLocalization];
+}
+
+- (void)applyLocalization {
+    UIView *scope = self.view.window ?: self.view;
+    [GPSLabLocalization applyLanguageAttributesToView:scope];
+    // Geography and numeric content stay LTR; the map is never physically mirrored.
+    [GPSLabLocalization forceLeftToRight:self.mapView];
+    [GPSLabLocalization forceLeftToRight:self.statusLabel];
+
+    self.titleLabel.text = GPSLabLocalized(@"overlay.title");
+    self.enabledLabel.text = GPSLabLocalized(@"overlay.enabled");
+    self.enabledSwitch.accessibilityLabel = GPSLabLocalized(@"overlay.enabled");
+    self.searchController.searchBar.placeholder = GPSLabLocalized(@"overlay.search.placeholder");
+    self.searchController.searchBar.accessibilityLabel = GPSLabLocalized(@"overlay.search.placeholder");
+    [self.pickCancelButton setTitle:GPSLabLocalized(@"common.cancel") forState:UIControlStateNormal];
+
+    self.headerSettingsButton.accessibilityLabel = GPSLabLocalized(@"overlay.accessibility.settings");
+    self.headerCloseButton.accessibilityLabel = GPSLabLocalized(@"common.close");
+    NSArray<NSString *> *controlKeys = @[
+        @"overlay.accessibility.center",
+        @"overlay.accessibility.favorites",
+        @"overlay.accessibility.route",
+        @"overlay.accessibility.settings",
+    ];
+    NSUInteger controlCount = MIN(self.controlButtons.count, controlKeys.count);
+    for (NSUInteger index = 0; index < controlCount; index++) {
+        self.controlButtons[index].accessibilityLabel = GPSLabLocalized(controlKeys[index]);
+    }
+
+    self.syntheticAnnotation.title = GPSLabLocalized(@"overlay.annotation.synthetic");
+    if (self.realLocationAnnotation != nil) {
+        self.realLocationAnnotation.title = GPSLabLocalized(@"overlay.annotation.real");
+    }
+    if (self.routeStartPin != nil) {
+        self.routeStartPin.title = GPSLabLocalized(@"route.annotation.start");
+    }
+    if (self.routeEndPin != nil) {
+        self.routeEndPin.title = GPSLabLocalized(@"route.annotation.end");
+    }
+
+    [self updateStatusLabel];
+    [self updatePickBanner];
+}
+
+#pragma mark - Outside tap (hide keyboard only)
+
+- (void)installOutsideTapRecognizer {
+    if (self.outsideTapRecognizer != nil) {
+        return;
+    }
+    UITapGestureRecognizer *tap = [[UITapGestureRecognizer alloc] initWithTarget:self
+                                                                          action:@selector(outsideTapped:)];
+    tap.delegate = self;
+    // Observe without consuming: map taps/pan/zoom and controls keep working.
+    tap.cancelsTouchesInView = NO;
+    tap.delaysTouchesBegan = NO;
+    tap.delaysTouchesEnded = NO;
+    [self.view addGestureRecognizer:tap];
+    self.outsideTapRecognizer = tap;
+}
+
+- (void)outsideTapped:(UITapGestureRecognizer *)recognizer {
+    if (recognizer.state != UIGestureRecognizerStateEnded) {
+        return;
+    }
+    [self endActiveSearch];
+}
+
 #pragma mark - Actions
 
 - (void)closeTapped {
@@ -455,7 +591,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 - (void)enabledChanged {
     [[GPSLabEngine sharedEngine] setEnabledAndNotify:self.enabledSwitch.on];
-    [GPSLabStatusLog append:(self.enabledSwitch.on ? @"Engine enabled" : @"Engine disabled")];
+    [GPSLabStatusLog append:(self.enabledSwitch.on ? GPSLabLocalized(@"overlay.engine.enabled")
+                                                   : GPSLabLocalized(@"overlay.engine.disabled"))];
     [self updateStatusLabel];
 }
 
@@ -476,25 +613,49 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 - (BOOL)searchBarShouldBeginEditing:(UISearchBar *)searchBar {
     (void)searchBar;
-    [self.searchController setActive:YES];
+    // Acquire the key-window lease BEFORE the field becomes first responder so
+    // the keyboard session is owned by the GPSLab window, not the host.
+    [[GPSLabOverlayPresenter sharedPresenter] acquireKeyLease];
     return YES;
 }
 
+- (void)searchBarTextDidBeginEditing:(UISearchBar *)searchBar {
+    // Activate only once editing has actually begun. Calling setActive: inside
+    // shouldBeginEditing can pre-empt the first responder and leave the keyboard
+    // hidden while the results container takes the presentation layer.
+    searchBar.showsCancelButton = YES;
+    if (!self.searchController.isActive) {
+        [self.searchController setActive:YES];
+    }
+}
+
+- (void)searchBarTextDidEndEditing:(UISearchBar *)searchBar {
+    // Keep Cancel visible for the whole search session: resigning the keyboard
+    // (e.g. the Search key) must not remove the only escape while the results
+    // layer still covers the canvas.
+    searchBar.showsCancelButton = self.searchController.isActive;
+}
+
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    // Run the pending/current query before resigning so results stay fresh
+    // without ending the session.
+    [self.searchResultsController updateSearchResultsForSearchController:self.searchController];
     [searchBar resignFirstResponder];
 }
 
 - (void)searchBarCancelButtonClicked:(UISearchBar *)searchBar {
-    (void)searchBar;
-    [self.searchResultsController cancelActiveSearch];
-    [self.searchController setActive:NO];
+    [searchBar resignFirstResponder];
+    [self deactivateSearch];
 }
 
 - (void)didDismissSearchController:(UISearchController *)searchController {
-    // A dismissed search must not keep an in-flight request alive or let a late
-    // response repopulate the (now hidden) results table.
+    // The session is only truly over here; clean the live query, hide Cancel and
+    // resume any presentation deferred while search owned the context.
     (void)searchController;
-    [self.searchResultsController cancelActiveSearch];
+    self.searchDismissing = NO;
+    self.searchController.searchBar.showsCancelButton = self.searchController.isActive;
+    [self.searchResultsController endSearchSession];
+    [[GPSLabModalCoordinator sharedCoordinator] resolvePendingPresentation];
 }
 
 - (void)applyMapItem:(MKMapItem *)item {
@@ -502,7 +663,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         return;
     }
     [self applyCoordinate:item.placemark.coordinate altitude:[[GPSLabEngine sharedEngine] configuration].altitude];
-    [self.searchController setActive:NO];
+    [self deactivateSearch];
 }
 
 #pragma mark - Sheet presentation
@@ -519,7 +680,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     manual.applyHandler = ^(CLLocationCoordinate2D coordinate, double altitude, double heading) {
         [weakSelf applyCoordinate:coordinate altitude:altitude heading:heading];
     };
-    [self presentViewController:GPSLabSheetNavigationController(manual) animated:YES completion:nil];
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:manual completion:nil];
 }
 
 - (void)presentFavoritesSheet {
@@ -529,7 +690,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [weakSelf applyCoordinate:CLLocationCoordinate2DMake(bookmark.latitude, bookmark.longitude)
                          altitude:bookmark.altitude];
     };
-    [self presentViewController:GPSLabSheetNavigationController(favorites) animated:YES completion:nil];
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:favorites completion:nil];
 }
 
 - (void)presentRecentsSheet {
@@ -538,7 +699,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     recents.selectHandler = ^(CLLocationCoordinate2D coordinate, double altitude) {
         [weakSelf applyCoordinate:coordinate altitude:altitude];
     };
-    [self presentViewController:GPSLabSheetNavigationController(recents) animated:YES completion:nil];
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:recents completion:nil];
 }
 
 - (void)presentFluctuationSheet {
@@ -552,7 +713,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [[GPSLabEngine sharedEngine] setDriftRadiusMeters:radiusMeters];
         [weakSelf updateStatusLabel];
     };
-    [self presentViewController:GPSLabSheetNavigationController(sheet) animated:YES completion:nil];
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:sheet completion:nil];
 }
 
 - (void)presentRouteSheet {
@@ -562,22 +723,30 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
     GPSLabOverlayViewController *__weak weakSelf = self;
     route.pickStartHandler = ^{
-        [weakSelf dismissViewControllerAnimated:YES completion:^{
-            weakSelf.reopenRouteAfterPick = YES;
-            [weakSelf beginPickingRouteStart];
+        [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:^{
+            GPSLabOverlayViewController *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            strongSelf.reopenRouteAfterPick = YES;
+            [strongSelf beginPickingRouteStart];
         }];
     };
     route.pickEndHandler = ^{
-        [weakSelf dismissViewControllerAnimated:YES completion:^{
-            weakSelf.reopenRouteAfterPick = YES;
-            [weakSelf beginPickingRouteEnd];
+        [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:^{
+            GPSLabOverlayViewController *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            strongSelf.reopenRouteAfterPick = YES;
+            [strongSelf beginPickingRouteEnd];
         }];
     };
     route.routeChangedHandler = ^{
         [weakSelf updateRouteAnnotations];
         [weakSelf updateStatusLabel];
     };
-    [self presentViewController:GPSLabSheetNavigationController(route) animated:YES completion:nil];
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:route completion:nil];
 }
 
 - (void)presentOptionsSheet {
@@ -588,7 +757,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     options.mapStyle = self.mapStyle;
     // Active is silent; surface only a meaningful subscription status in settings.
     options.subscriptionStatusText = ([[GPSLabLicenseManager sharedManager] state] == GPSLabEntitlementStateGrace)
-        ? @"Subscription active (grace period). Renew soon to avoid interruption."
+        ? GPSLabLocalized(@"subscription.grace")
         : nil;
 
     GPSLabOverlayViewController *__weak weakSelf = self;
@@ -603,21 +772,33 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [weakSelf applyMapStyle:style];
     };
     options.manualEntryHandler = ^{
-        [weakSelf dismissViewControllerAnimated:YES completion:^{
-            [weakSelf presentManualEntrySheet];
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:^{
+            [strongSelf presentManualEntrySheet];
         }];
     };
     options.recentsHandler = ^{
-        [weakSelf dismissViewControllerAnimated:YES completion:^{
-            [weakSelf presentRecentsSheet];
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:^{
+            [strongSelf presentRecentsSheet];
         }];
     };
     options.fluctuationHandler = ^{
-        [weakSelf dismissViewControllerAnimated:YES completion:^{
-            [weakSelf presentFluctuationSheet];
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:^{
+            [strongSelf presentFluctuationSheet];
         }];
     };
-    [self presentViewController:GPSLabSheetNavigationController(options) animated:YES completion:nil];
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:options completion:nil];
 }
 
 #pragma mark - Coordinate application
@@ -679,7 +860,9 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 - (void)handlePickAtCoordinate:(CLLocationCoordinate2D)coordinate {
     BOOL pickingStart = (self.pickMode == GPSLabMapPickModeRouteStart);
-    MKMapItem *item = [self mapItemForCoordinate:coordinate name:(pickingStart ? @"Start" : @"End")];
+    NSString *name = pickingStart ? GPSLabLocalized(@"route.annotation.start")
+                                  : GPSLabLocalized(@"route.annotation.end");
+    MKMapItem *item = [self mapItemForCoordinate:coordinate name:name];
     if (pickingStart) {
         self.pendingRouteStartItem = item;
     } else {
@@ -715,6 +898,36 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     return YES;
 }
 
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+       shouldReceiveTouch:(UITouch *)touch {
+    if (gestureRecognizer != self.outsideTapRecognizer) {
+        // Map tap/long-press observe touches exactly as before.
+        return YES;
+    }
+    if (!self.isSearchSessionActive) {
+        return NO;
+    }
+    UIView *touchView = touch.view;
+    if (touchView == nil) {
+        return NO;
+    }
+    // Never treat controls, text input, search or sheet content as "outside":
+    // those own their own actions and must not also dismiss the keyboard.
+    for (UIView *view = touchView; view != nil; view = view.superview) {
+        if ([view isKindOfClass:[UIControl class]] ||
+            [view isKindOfClass:[UITextField class]] ||
+            [view isKindOfClass:[UITextView class]] ||
+            [view isKindOfClass:[UISearchBar class]]) {
+            return NO;
+        }
+    }
+    UIViewController *presented = self.presentedViewController;
+    if (presented != nil && presented.view != nil && [touchView isDescendantOfView:presented.view]) {
+        return NO;
+    }
+    return YES;
+}
+
 #pragma mark - Route annotations and polyline
 
 - (MKMapItem *)mapItemForCoordinate:(CLLocationCoordinate2D)coordinate name:(NSString *)name {
@@ -728,7 +941,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     if (self.pendingRouteStartItem != nil) {
         if (self.routeStartPin == nil) {
             self.routeStartPin = [[MKPointAnnotation alloc] init];
-            self.routeStartPin.title = @"Start";
+            self.routeStartPin.title = GPSLabLocalized(@"route.annotation.start");
             [self.mapView addAnnotation:self.routeStartPin];
         }
         self.routeStartPin.coordinate = self.pendingRouteStartItem.placemark.coordinate;
@@ -736,7 +949,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     if (self.pendingRouteEndItem != nil) {
         if (self.routeEndPin == nil) {
             self.routeEndPin = [[MKPointAnnotation alloc] init];
-            self.routeEndPin.title = @"End";
+            self.routeEndPin.title = GPSLabLocalized(@"route.annotation.end");
             [self.mapView addAnnotation:self.routeEndPin];
         }
         self.routeEndPin.coordinate = self.pendingRouteEndItem.placemark.coordinate;
@@ -884,7 +1097,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 - (void)updateRealLocationAnnotationWithCoordinate:(CLLocationCoordinate2D)coordinate {
     if (self.realLocationAnnotation == nil) {
         self.realLocationAnnotation = [[MKPointAnnotation alloc] init];
-        self.realLocationAnnotation.title = @"Real (not spoofed)";
+        self.realLocationAnnotation.title = GPSLabLocalized(@"overlay.annotation.real");
         [self.mapView addAnnotation:self.realLocationAnnotation];
     }
     self.realLocationAnnotation.coordinate = coordinate;
@@ -931,8 +1144,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 - (void)updateStatusLabel {
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
-    NSString *state = configuration.enabled ? @"Enabled" : @"Disabled";
-    self.statusLabel.text = [NSString stringWithFormat:@"%@ | %.5f, %.5f | %.0f m",
+    NSString *state = configuration.enabled ? GPSLabLocalized(@"overlay.enabled")
+                                            : GPSLabLocalized(@"overlay.disabled");
+    NSString *format = GPSLabLocalized(@"overlay.status.format");
+    self.statusLabel.text = [NSString stringWithFormat:format,
                              state,
                              configuration.latitude,
                              configuration.longitude,

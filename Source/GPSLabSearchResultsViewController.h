@@ -17,8 +17,18 @@ NS_ASSUME_NONNULL_BEGIN
 /** Invoked on the main queue when the user selects a result. */
 @property (nonatomic, copy, nullable) void (^selectionHandler)(MKMapItem *item);
 
+/**
+ * Invoked when the user taps the always-available, GPSLab-localized Done escape
+ * in the results header. Keeps a public-API exit reachable while the results
+ * layer covers the canvas.
+ */
+@property (nonatomic, copy, nullable) void (^doneHandler)(void);
+
 /** Cancels the in-flight search and invalidates any pending completion. */
 - (void)cancelActiveSearch;
+
+/** Cancels the search and clears the live query/results when the session ends. */
+- (void)endSearchSession;
 
 @end
 

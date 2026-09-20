@@ -7,24 +7,59 @@
 
 #import "GPSLabRecentsViewController.h"
 
+#import "GPSLabLocalization.h"
+#import "GPSLabModalCoordinator.h"
 #import "GPSLabStore.h"
 
 @implementation GPSLabRecentsViewController {
     NSMutableArray<NSDictionary *> *_recents;
+    UILabel *_emptyLabel;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Recents";
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"Clear"
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@""
                                                                                style:UIBarButtonItemStylePlain
                                                                               target:self
                                                                               action:@selector(clearTapped)];
+    _emptyLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+    _emptyLabel.textAlignment = NSTextAlignmentCenter;
+    _emptyLabel.numberOfLines = 0;
+    _emptyLabel.textColor = UIColor.secondaryLabelColor;
+    _emptyLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    _emptyLabel.adjustsFontForContentSizeCategory = YES;
+    self.tableView.backgroundView = _emptyLabel;
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(languageDidChange:)
+                                                 name:GPSLabLanguageDidChangeNotification
+                                               object:nil];
+    [self gpslab_applyLocalization];
     [self reloadRecents];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+#pragma mark - Localization
+
+- (void)languageDidChange:(NSNotification *)notification {
+    (void)notification;
+    [self gpslab_applyLocalization];
+    [self.tableView reloadData];
+}
+
+- (void)gpslab_applyLocalization {
+    self.title = GPSLabLocalized(@"recents.title");
+    self.navigationItem.rightBarButtonItem.title = GPSLabLocalized(@"recents.clear");
+    _emptyLabel.text = GPSLabLocalized(@"recents.empty");
+    [GPSLabLocalization applyLanguageAttributesToView:self.view];
 }
 
 - (void)reloadRecents {
     _recents = [[[GPSLabStore sharedStore] loadRecents] mutableCopy];
+    self.tableView.backgroundView.hidden = _recents.count > 0;
     [self.tableView reloadData];
 }
 
@@ -32,12 +67,14 @@
     if (_recents.count == 0) {
         return;
     }
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Clear recents"
-                                                                   message:@"Remove every recent anchor?"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:GPSLabLocalized(@"recents.clear.title")
+                                                                   message:GPSLabLocalized(@"recents.clear.message")
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
-    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:GPSLabLocalized(@"common.cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
     GPSLabRecentsViewController *__weak weakSelf = self;
-    [alert addAction:[UIAlertAction actionWithTitle:@"Clear"
+    [alert addAction:[UIAlertAction actionWithTitle:GPSLabLocalized(@"recents.clear")
                                               style:UIAlertActionStyleDestructive
                                             handler:^(UIAlertAction *action) {
         (void)action;
@@ -53,7 +90,7 @@
         alert.popoverPresentationController.sourceView = self.view;
         alert.popoverPresentationController.sourceRect = self.view.bounds;
     }
-    [self presentViewController:alert animated:YES completion:nil];
+    [[GPSLabModalCoordinator sharedCoordinator] presentAlert:alert completion:nil];
 }
 
 #pragma mark - Table
@@ -68,10 +105,13 @@
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"recentCell"];
     }
     NSDictionary *recent = _recents[(NSUInteger)indexPath.row];
-    cell.textLabel.text = @"Recent";
-    cell.detailTextLabel.text = [NSString stringWithFormat:@"%.4f, %.4f",
-                                 [recent[@"latitude"] doubleValue],
-                                 [recent[@"longitude"] doubleValue]];
+    cell.textLabel.text = GPSLabLocalized(@"recents.cell.title");
+    NSString *latitude = [GPSLabLocalization decimalString:[recent[@"latitude"] doubleValue]
+                                            fractionDigits:4];
+    NSString *longitude = [GPSLabLocalization decimalString:[recent[@"longitude"] doubleValue]
+                                             fractionDigits:4];
+    cell.detailTextLabel.text = [NSString stringWithFormat:@"%@, %@", latitude, longitude];
+    [GPSLabLocalization forceLeftToRight:cell.detailTextLabel];
     return cell;
 }
 
@@ -95,7 +135,7 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
     GPSLabRecentsViewController *__weak weakSelf = self;
     NSUInteger row = (NSUInteger)indexPath.row;
     UIContextualAction *delete = [UIContextualAction contextualActionWithStyle:UIContextualActionStyleDestructive
-                                                                         title:@"Delete"
+                                                                         title:GPSLabLocalized(@"common.delete")
                                                                        handler:^(UIContextualAction *action,
                                                                                  UIView *sourceView,
                                                                                  void (^completionHandler)(BOOL)) {

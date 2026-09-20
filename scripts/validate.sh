@@ -442,4 +442,92 @@ for testfile in tests/license_policy_test.c tests/GPSLabLicenseTests.m; do
 done
 pass "license tests are present"
 
+# -------------------------------------------------------------- Localization ---
+echo "== Localization invariants =="
+LOC_CORE="$SOURCE_DIR/GPSLabLocalizationCore.c"
+LOC_WRAPPER="$SOURCE_DIR/GPSLabLocalization.m"
+[[ -f "$LOC_CORE" ]] || fail "GPSLabLocalizationCore.c missing"
+[[ -f "$LOC_WRAPPER" ]] || fail "GPSLabLocalization.m missing"
+grep -q -F "Source/GPSLabLocalizationCore.c" "$MAKEFILE" \
+    || fail "localization core must be compiled by the Makefile"
+grep -q -F "Source/GPSLabLocalization.m" "$MAKEFILE" \
+    || fail "localization wrapper must be compiled by the Makefile"
+grep -q -F "Source/GPSLabModalCoordinator.m" "$MAKEFILE" \
+    || fail "modal coordinator must be compiled by the Makefile"
+
+# Arabic must be the default: a missing/invalid value resolves to Arabic and
+# English is only returned for an explicit "en" prefix.
+grep -q -F 'return GPSLabLanguageArabic;' "$LOC_CORE" \
+    || fail "localization core must default to Arabic"
+grep -q -F 'GPSLabLanguageArabic = 0' "$SOURCE_DIR/GPSLabLocalizationCore.h" \
+    || fail "Arabic must be the zero/default language constant"
+# The catalog must be embedded in the dylib, not loaded from host bundle
+# resources. (LicenseConfig legitimately reads the host Info.plist, so the
+# ban below is limited to localized-string/bundle-table lookups.)
+if grep -r -n -E 'NSLocalizedString|\.lproj' "$SOURCE_DIR" --include='*.m' >/dev/null 2>&1; then
+    fail "localization must use the embedded catalog, not host bundle/strings resources"
+fi
+if grep -n -F "NSBundle" "$LOC_WRAPPER" >/dev/null 2>&1; then
+    fail "localization wrapper must not depend on the host main bundle"
+fi
+# Never mutate the process-wide language list or global appearance.
+if grep -r -n -E 'AppleLanguages|UIAppearance' "$SOURCE_DIR" >/dev/null 2>&1; then
+    grep -r -n -E 'AppleLanguages|UIAppearance' "$SOURCE_DIR" >&2 || true
+    fail "global language/appearance mutation is not allowed"
+fi
+pass "embedded catalog, Arabic default, no global language/appearance mutation"
+
+# Scoped key-window lease + serialized presentation hooks must be present.
+PRESENTER="$SOURCE_DIR/GPSLabOverlayPresenter.m"
+COORDINATOR="$SOURCE_DIR/GPSLabModalCoordinator.m"
+[[ -f "$COORDINATOR" ]] || fail "GPSLabModalCoordinator.m missing"
+grep -q -F "makeKeyWindow" "$PRESENTER" || fail "presenter must make the overlay window key on demand"
+grep -q -F "releaseKeyLease" "$PRESENTER" || fail "presenter must release the scoped key lease"
+grep -q -F "UIWindowLevelNormal" "$PRESENTER" \
+    || fail "key-lease restore must be limited to a normal-level host window"
+grep -q -F "resolvePendingPresentation" "$COORDINATOR" \
+    || fail "coordinator must resolve a presentation deferred by search"
+grep -q -F "resolvePendingPresentation" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
+    || fail "canvas must resume a deferred presentation from didDismissSearchController"
+grep -q -F "acquireKeyLease" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
+    || fail "canvas must acquire the key lease before search editing"
+if grep -r -n -F "canBecomeFirstResponder" "$SOURCE_DIR" >/dev/null 2>&1; then
+    fail "no canBecomeFirstResponder window/responder hack is allowed"
+fi
+pass "scoped key lease and serialized presentation hooks present"
+
+# Modal decision policy: must be a shared helper that the coordinator actually
+# obeys, compiled by the Makefile and covered by the portable test.
+POLICY_C="$SOURCE_DIR/GPSLabModalPolicy.c"
+[[ -f "$POLICY_C" ]] || fail "GPSLabModalPolicy.c missing"
+grep -q -F "Source/GPSLabModalPolicy.c" "$MAKEFILE" \
+    || fail "modal policy must be compiled by the Makefile"
+grep -q -F "GPSLabModalPolicyDecidePresentation" "$COORDINATOR" \
+    || fail "coordinator must obey the shared modal policy"
+grep -q -F "GPSLabModalSessionIsCurrent" "$COORDINATOR" \
+    || fail "coordinator must gate queued work by session generation"
+grep -q -F "dismissViewControllerAnimated" "$COORDINATOR" \
+    || fail "coordinator must dismiss through UIKit transitions"
+if grep -q -F "dismissAllAnimated:animated completion:completion" "$COORDINATOR"; then
+    fail "dismissAll must not recurse through itself"
+fi
+# Tracked transitions must park for the owner completion; untracked ones must
+# drain only from a captured coordinator callback (never a nil-coordinator retry).
+grep -q -F "GPSLabModalDecisionParkForTrackedTransition" "$COORDINATOR" \
+    || fail "tracked transitions must park for the owner completion"
+grep -q -F "registerUntrackedTransitionDrain" "$COORDINATOR" \
+    || fail "untracked transitions must drain from the coordinator callback"
+grep -q -F "drainPendingPresentationIfCurrent" "$COORDINATOR" \
+    || fail "coordinator must use a guarded, generation-checked drain"
+if grep -q -E "waitForUntrackedTransitionOnAnchor|runPendingPresentationIfCurrent" "$COORDINATOR"; then
+    fail "the recursive nil-coordinator retry path must stay removed"
+fi
+pass "modal policy helper compiled, obeyed and tested"
+
+for testfile in tests/gpslab_localization_test.c tests/GPSLabLocalizationTests.m \
+                 tests/gpslab_modal_policy_test.c; do
+    [[ -f "$ROOT/$testfile" ]] || fail "localization/policy test missing: $testfile"
+done
+pass "localization and modal policy tests are present"
+
 echo "All GPSLab static checks passed."

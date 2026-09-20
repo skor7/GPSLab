@@ -170,6 +170,7 @@ suite, under `GPSLab.*` keys:
 - route `routeMode`, `routeCustomSpeedKmh`, `stopBehavior`
 - bookmarks (name + coordinate + altitude)
 - recents (coordinate + altitude, capped at 20, de-duplicated within 5 m)
+- UI language (`GPSLab.language`: `ar`/`en`; GPSLab-scoped, defaults to Arabic)
 - anchor `latitude`, `longitude`, `altitude`, `heading` — **only while
   `keepLastCoordinate` is on**
 

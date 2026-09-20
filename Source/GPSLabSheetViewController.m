@@ -7,6 +7,9 @@
 
 #import "GPSLabSheetViewController.h"
 
+#import "GPSLabLocalization.h"
+#import "GPSLabModalCoordinator.h"
+
 UINavigationController *GPSLabSheetNavigationController(UIViewController *root) {
     if (root == nil) {
         return nil;
@@ -34,7 +37,7 @@ UINavigationController *GPSLabSheetNavigationController(UIViewController *root) 
 @implementation UIViewController (GPSLabSheet)
 
 - (void)gpslab_dismissSheet {
-    [self dismissViewControllerAnimated:YES completion:nil];
+    [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:nil];
 }
 
 @end
@@ -79,6 +82,25 @@ UINavigationController *GPSLabSheetNavigationController(UIViewController *root) 
     ]];
 
     self.stack = stack;
+
+    [self gpslab_applyLocalization];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(gpslab_languageDidChange:)
+                                                 name:GPSLabLanguageDidChangeNotification
+                                               object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)gpslab_applyLocalization {
+    // Subclasses override to re-apply their own catalog strings.
+}
+
+- (void)gpslab_languageDidChange:(NSNotification *)notification {
+    (void)notification;
+    [self gpslab_applyLocalization];
 }
 
 - (UIStackView *)contentStack {
@@ -138,6 +160,8 @@ UINavigationController *GPSLabSheetNavigationController(UIViewController *root) 
     field.autocorrectionType = UITextAutocorrectionTypeNo;
     field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    // Numeric fields stay LTR so digits/signs are never reordered by RTL.
+    [GPSLabLocalization forceLeftToRight:field];
     return field;
 }
 
@@ -145,8 +169,10 @@ UINavigationController *GPSLabSheetNavigationController(UIViewController *root) 
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
                                                                    message:message
                                                             preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
+    [alert addAction:[UIAlertAction actionWithTitle:GPSLabLocalized(@"common.ok")
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [[GPSLabModalCoordinator sharedCoordinator] presentAlert:alert completion:nil];
 }
 
 @end

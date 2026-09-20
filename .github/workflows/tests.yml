@@ -51,3 +51,51 @@ jobs:
             Source/GPSLabLicenseConfig.m \
             -o /tmp/gpslab-license-tests
           /tmp/gpslab-license-tests
+
+  localization-core-tests:
+    name: Localization core (portable C)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portable localization tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_localization_test.c Source/GPSLabLocalizationCore.c \
+            -o /tmp/gpslab_localization_test
+          /tmp/gpslab_localization_test
+
+  localization-tests:
+    name: Localization wrapper (macOS Foundation)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run ObjC localization tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -ISource \
+            tests/GPSLabLocalizationTests.m \
+            Source/GPSLabLocalization.m \
+            Source/GPSLabLocalizationCore.c \
+            -o /tmp/gpslab-localization-tests
+          /tmp/gpslab-localization-tests
+
+  modal-policy-tests:
+    name: Modal policy (portable C)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portable modal policy tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_modal_policy_test.c Source/GPSLabModalPolicy.c \
+            -o /tmp/gpslab_modal_policy_test
+          /tmp/gpslab_modal_policy_test

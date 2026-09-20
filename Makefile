@@ -10,6 +10,9 @@ LIBRARY_NAME = GPSLab
 
 GPSLab_FILES = \
 	Source/GPSLabTypes.m \
+	Source/GPSLabLocalizationCore.c \
+	Source/GPSLabLocalization.m \
+	Source/GPSLabModalPolicy.c \
 	Source/GPSLabGeodesy.m \
 	Source/GPSLabConfiguration.m \
 	Source/GPSLabStore.m \
@@ -27,6 +30,7 @@ GPSLab_FILES = \
 	Source/GPSLabEntitlement.m \
 	Source/GPSLabLicenseManager.m \
 	Source/GPSLabSubscriptionViewController.m \
+	Source/GPSLabModalCoordinator.m \
 	Source/GPSLabSheetViewController.m \
 	Source/GPSLabSearchResultsViewController.m \
 	Source/GPSLabManualEntryViewController.m \
