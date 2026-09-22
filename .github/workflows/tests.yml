@@ -162,6 +162,54 @@ jobs:
             Source/GPSLabProfileCore.c -o /tmp/gpslab_altitude_test
           /tmp/gpslab_altitude_test
 
+  selection-policy-tests:
+    name: Selection draft + favorite policy core (portable C)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portable selection policy tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_selection_policy_test.c \
+            Source/GPSLabSelectionPolicyCore.c Source/GPSLabProfileCore.c \
+            -lm -o /tmp/gpslab_selection_policy_test
+          /tmp/gpslab_selection_policy_test
+
+  selection-wiring-tests:
+    name: Selection draft lifecycle wiring (portable C, source-validated)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run selection wiring assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_selection_wiring_test.c \
+            -o /tmp/gpslab_selection_wiring_test
+          /tmp/gpslab_selection_wiring_test
+
+  store-tests:
+    name: Store draft + duplicate-aware bookmarks (macOS Foundation)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run store tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -framework CoreLocation -ISource \
+            tests/GPSLabStoreTests.m Source/GPSLabStore.m Source/GPSLabConfiguration.m \
+            Source/GPSLabGeodesy.m Source/GPSLabTypes.m Source/GPSLabProfileCore.c \
+            Source/GPSLabSelectionPolicyCore.c -o /tmp/gpslab-store-tests
+          /tmp/gpslab-store-tests
+
   engine-tests:
     name: Engine master switch + settings preservation (macOS)
     runs-on: macos-latest
@@ -177,6 +225,7 @@ jobs:
             tests/GPSLabEngineTests.m Source/GPSLabEngine.m Source/GPSLabConfiguration.m \
             Source/GPSLabRouteSimulator.m Source/GPSLabDriftModel.m Source/GPSLabLocationFactory.m \
             Source/GPSLabGeodesy.m Source/GPSLabTypes.m Source/GPSLabStore.m \
+            Source/GPSLabProfileCore.c Source/GPSLabSelectionPolicyCore.c \
             Source/CoreLocationHooks.m Source/LocationStream.m Source/Diagnostics.m \
             -o /tmp/gpslab-engine-tests
           /tmp/gpslab-engine-tests

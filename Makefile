@@ -11,6 +11,7 @@ LIBRARY_NAME = GPSLab
 GPSLab_FILES = \
 	Source/GPSLabTypes.m \
 	Source/GPSLabProfileCore.c \
+	Source/GPSLabSelectionPolicyCore.c \
 	Source/GPSLabSchedulerCore.c \
 	Source/GPSLabLocalizationCore.c \
 	Source/GPSLabLocalization.m \

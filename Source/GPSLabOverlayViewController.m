@@ -52,6 +52,7 @@
 #import "GPSLabSearchLayoutCore.h"
 #import "GPSLabSearchResultsViewController.h"
 #import "GPSLabSecureStore.h"
+#import "GPSLabSelectionPolicyCore.h"
 #import "GPSLabSheetViewController.h"
 #import "GPSLabSimulationSettingsViewController.h"
 #import "GPSLabStatusLog.h"
@@ -267,6 +268,9 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     [self buildBody];
     [self installOutsideTapRecognizer];
     [self loadConfigurationIntoUI];
+    // Restore a persisted preview draft once, after the committed state is loaded.
+    // UI-only: the engine is never written by a restore.
+    [self restorePendingSelection];
     [self reloadProfiles];
     [self applyLocalization];
 
@@ -1471,13 +1475,98 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 }
 
 - (void)bookmarkTapped {
+    // Capture the SHOWN selection: the pending preview when one exists, otherwise
+    // the committed anchor with its matching altitude. Shared policy helper so the
+    // resolution is unit-tested without UIKit.
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
-    GPSLabBookmark *bookmark = [GPSLabBookmark bookmarkWithName:GPSLabLocalized(@"favorites.defaultName")
-                                                      coordinate:configuration.coordinate
-                                                        altitude:configuration.altitude];
-    [[GPSLabStore sharedStore] addBookmark:bookmark];
-    [GPSLabStatusLog append:GPSLabLocalized(@"profiles.ready")];
-    [self updateFavoritesList];
+    double latitude = 0.0;
+    double longitude = 0.0;
+    double altitude = 0.0;
+    GPSLabFavoriteResolveShownSelection(self.hasPendingSelection ? 1 : 0,
+                                        self.pendingCoordinate.latitude,
+                                        self.pendingCoordinate.longitude,
+                                        self.pendingAltitude,
+                                        configuration.latitude,
+                                        configuration.longitude,
+                                        configuration.altitude,
+                                        &latitude,
+                                        &longitude,
+                                        &altitude);
+    CLLocationCoordinate2D coordinate = CLLocationCoordinate2DMake(latitude, longitude);
+    if (!GPSLabIsValidCoordinate(coordinate.latitude, coordinate.longitude)) {
+        return;
+    }
+    // Refuse the pristine default (0,0) unless there is proof of an intentional
+    // or legacy persisted selection; a pending/intentional 0,0 stays allowed.
+    if (![[GPSLabStore sharedStore] shouldAllowFavoriteAtCoordinate:coordinate
+                                                          hasPending:self.hasPendingSelection]) {
+        // A visible native message: the status log has no UI consumer.
+        [self presentFavoriteMessageKey:@"favorites.originRequired"];
+        return;
+    }
+    [self presentFavoriteNamePromptForCoordinate:coordinate altitude:altitude];
+}
+
+- (void)presentFavoriteNamePromptForCoordinate:(CLLocationCoordinate2D)coordinate altitude:(double)altitude {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:GPSLabLocalized(@"favorites.add")
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        // A visible localized default the user can accept or replace.
+        textField.text = GPSLabLocalized(@"favorites.defaultName");
+        textField.placeholder = GPSLabLocalized(@"common.name");
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:GPSLabLocalized(@"common.cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    // Weak alert ref: the action block must not retain its own alert (cycle).
+    __weak UIAlertController *weakAlert = alert;
+    [alert addAction:[UIAlertAction actionWithTitle:GPSLabLocalized(@"common.save")
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        UIAlertController *strongAlert = weakAlert;
+        if (strongSelf == nil || strongAlert == nil) {
+            return;
+        }
+        // Revalidate and dedupe at the actual confirm (a preview may have moved or
+        // a duplicate may have appeared while the prompt was open).
+        if (!GPSLabIsValidCoordinate(coordinate.latitude, coordinate.longitude)) {
+            [strongSelf presentFavoriteMessageKey:@"favorites.originRequired"];
+            return;
+        }
+        NSString *name = [strongAlert.textFields.firstObject.text
+            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (name.length == 0) {
+            name = GPSLabLocalized(@"favorites.defaultName");
+        }
+        GPSLabBookmark *bookmark = [GPSLabBookmark bookmarkWithName:name
+                                                          coordinate:coordinate
+                                                            altitude:altitude];
+        if (![[GPSLabStore sharedStore] addBookmarkIfNotDuplicate:bookmark]) {
+            [GPSLabStatusLog append:GPSLabLocalized(@"favorites.duplicate")];
+            [strongSelf presentFavoriteMessageKey:@"favorites.duplicate"];
+            [strongSelf updateFavoritesList];
+            return;
+        }
+        [GPSLabStatusLog append:GPSLabLocalized(@"favorites.added")];
+        [strongSelf updateFavoritesList];
+    }]];
+    [[GPSLabModalCoordinator sharedCoordinator] presentAlert:alert completion:nil];
+}
+
+/** Visible native message (the status log alone has no UI consumer). */
+- (void)presentFavoriteMessageKey:(NSString *)key {
+    NSString *message = GPSLabLocalized(key);
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:GPSLabLocalized(@"favorites.title")
+                                                                   message:message
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:GPSLabLocalized(@"common.ok")
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [[GPSLabModalCoordinator sharedCoordinator] presentAlert:alert completion:nil];
 }
 
 - (void)mapFavoritesChanged {
@@ -1564,9 +1653,14 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         return;
     }
     if (self.hasPendingSelection) {
-        // Commit the previewed selection through the existing engine path.
-        [self applyCoordinate:self.pendingCoordinate altitude:self.pendingAltitude heading:self.pendingHeading];
-        [self clearPendingSelection];
+        // Commit the previewed selection through the existing engine path. The
+        // draft is cleared only when the commit actually succeeds.
+        BOOL applied = [self applyCoordinate:self.pendingCoordinate
+                                    altitude:self.pendingAltitude
+                                     heading:self.pendingHeading];
+        if (applied) {
+            [self clearPendingSelection];
+        }
         [self endActiveSearch];
         return;
     }
@@ -1809,6 +1903,9 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         }
         strongSelf.appliedProfileIdentifier = profile.identifier;
         [[GPSLabScheduler sharedScheduler] armWithProfile:profile];
+        // A profile apply commits its own anchor: drop any obsolete preview draft
+        // so it cannot overshadow the freshly applied committed selection.
+        [strongSelf clearPendingSelection];
         [strongSelf loadConfigurationIntoUI];
         [strongSelf updateMapFromState];
         [strongSelf scheduleBackgroundSnapshot];
@@ -1817,6 +1914,9 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 /** Shows a staged (disabled) profile's configuration and pending route UI. */
 - (void)applyStagedProfileUI:(GPSLabProfile *)profile {
+    // A staged profile owns the committed anchor; an obsolete preview draft must
+    // not overshadow it.
+    [self clearPendingSelection];
     [self loadConfigurationIntoUI];
     [self updateMapFromState];
     // Restore the saved route endpoints + settings for an explicit later start.
@@ -1883,8 +1983,148 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [row setTitleColor:GPSLabThemeTextColor() forState:UIControlStateNormal];
         row.tag = (NSInteger)index;
         [row addTarget:self action:@selector(favoriteTapped:) forControlEvents:UIControlEventTouchUpInside];
-        [self.favoritesList addArrangedSubview:row];
+        [row setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
+
+        UIButton *menuButton = [UIButton buttonWithType:UIButtonTypeSystem];
+        UIImageSymbolConfiguration *symbolConfiguration =
+            [UIImageSymbolConfiguration configurationWithPointSize:15.0 weight:UIImageSymbolWeightSemibold];
+        [menuButton setImage:[UIImage systemImageNamed:@"ellipsis" withConfiguration:symbolConfiguration]
+                    forState:UIControlStateNormal];
+        menuButton.tintColor = GPSLabThemeMutedColor();
+        menuButton.showsMenuAsPrimaryAction = YES;
+        menuButton.accessibilityLabel = GPSLabLocalized(@"favorites.manage");
+        menuButton.menu = [self favoriteManagementMenuForBookmark:bookmark];
+        [menuButton.widthAnchor constraintEqualToConstant:32.0].active = YES;
+        [menuButton.heightAnchor constraintEqualToConstant:32.0].active = YES;
+        [menuButton setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+        UIStackView *rowStack = [[UIStackView alloc] initWithArrangedSubviews:@[ row, menuButton ]];
+        rowStack.axis = UILayoutConstraintAxisHorizontal;
+        rowStack.alignment = UIStackViewAlignmentCenter;
+        rowStack.spacing = 4.0;
+        [self.favoritesList addArrangedSubview:rowStack];
     }
+}
+
+- (UIMenu *)favoriteManagementMenuForBookmark:(GPSLabBookmark *)bookmark {
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    UIAction *rename = [UIAction actionWithTitle:GPSLabLocalized(@"common.rename")
+                                           image:[UIImage systemImageNamed:@"pencil"]
+                                      identifier:nil
+                                         handler:^(UIAction *action) {
+        (void)action;
+        [weakSelf renameFavorite:bookmark];
+    }];
+    UIAction *delete = [UIAction actionWithTitle:GPSLabLocalized(@"common.delete")
+                                           image:[UIImage systemImageNamed:@"trash"]
+                                      identifier:nil
+                                         handler:^(UIAction *action) {
+        (void)action;
+        [weakSelf deleteFavorite:bookmark];
+    }];
+    delete.attributes = UIMenuElementAttributesDestructive;
+    return [UIMenu menuWithTitle:@"" children:@[ rename, delete ]];
+}
+
+/**
+ * Resolves the captured bookmark against a freshly loaded list by content, so a
+ * delayed rename/delete never writes a stale index. Old schema is untouched
+ * (there are no stored identifiers); the captured object is matched carefully.
+ */
+- (NSInteger)indexOfFavoriteMatching:(GPSLabBookmark *)captured
+                         inBookmarks:(NSArray<GPSLabBookmark *> *)bookmarks {
+    if (captured == nil) {
+        return -1;
+    }
+    for (NSUInteger index = 0; index < bookmarks.count; index++) {
+        GPSLabBookmark *candidate = bookmarks[index];
+        if (![candidate.name isEqualToString:captured.name]) {
+            continue;
+        }
+        if (fabs(candidate.latitude - captured.latitude) > 1e-9) {
+            continue;
+        }
+        if (fabs(candidate.longitude - captured.longitude) > 1e-9) {
+            continue;
+        }
+        if (fabs(candidate.altitude - captured.altitude) > 1e-6) {
+            continue;
+        }
+        return (NSInteger)index;
+    }
+    return -1;
+}
+
+- (void)renameFavorite:(GPSLabBookmark *)bookmark {
+    if ([self indexOfFavoriteMatching:bookmark inBookmarks:[[GPSLabStore sharedStore] loadBookmarks]] < 0) {
+        [self updateFavoritesList];
+        return;
+    }
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:GPSLabLocalized(@"favorites.rename")
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.text = bookmark.name;
+        textField.placeholder = GPSLabLocalized(@"common.name");
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:GPSLabLocalized(@"common.cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    // Weak alert ref: the action block must not retain its own alert (cycle).
+    __weak UIAlertController *weakAlert = alert;
+    [alert addAction:[UIAlertAction actionWithTitle:GPSLabLocalized(@"common.rename")
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        UIAlertController *strongAlert = weakAlert;
+        if (strongSelf == nil || strongAlert == nil) {
+            return;
+        }
+        NSInteger current = [strongSelf indexOfFavoriteMatching:bookmark
+                                                    inBookmarks:[[GPSLabStore sharedStore] loadBookmarks]];
+        if (current < 0) {
+            [strongSelf updateFavoritesList];
+            return;
+        }
+        NSString *name = [strongAlert.textFields.firstObject.text
+            stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        // A blank rename is a no-op: keep the existing name safely.
+        if (name.length > 0) {
+            [[GPSLabStore sharedStore] renameBookmarkAtIndex:(NSUInteger)current name:name];
+        }
+        [strongSelf updateFavoritesList];
+    }]];
+    [[GPSLabModalCoordinator sharedCoordinator] presentAlert:alert completion:nil];
+}
+
+- (void)deleteFavorite:(GPSLabBookmark *)bookmark {
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:GPSLabLocalized(@"favorites.delete.title")
+                                                                   message:bookmark.name
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:GPSLabLocalized(@"common.cancel")
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    [alert addAction:[UIAlertAction actionWithTitle:GPSLabLocalized(@"common.delete")
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *action) {
+        (void)action;
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        NSInteger current = [strongSelf indexOfFavoriteMatching:bookmark
+                                                    inBookmarks:[[GPSLabStore sharedStore] loadBookmarks]];
+        if (current < 0) {
+            [strongSelf updateFavoritesList];
+            return;
+        }
+        [[GPSLabStore sharedStore] deleteBookmarkAtIndex:(NSUInteger)current];
+        [strongSelf updateFavoritesList];
+    }]];
+    [[GPSLabModalCoordinator sharedCoordinator] presentAlert:alert completion:nil];
 }
 
 - (void)favoriteTapped:(UIButton *)sender {
@@ -1893,6 +2133,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         return;
     }
     GPSLabBookmark *bookmark = bookmarks[(NSUInteger)sender.tag];
+    // The existing commit path also clears any obsolete preview draft.
     [self applyCoordinate:CLLocationCoordinate2DMake(bookmark.latitude, bookmark.longitude)
                  altitude:bookmark.altitude];
     [self updateFavoritesList];
@@ -2045,14 +2286,14 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 #pragma mark - Coordinate application
 
-- (void)applyCoordinate:(CLLocationCoordinate2D)coordinate altitude:(double)altitude {
+- (BOOL)applyCoordinate:(CLLocationCoordinate2D)coordinate altitude:(double)altitude {
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
-    [self applyCoordinate:coordinate altitude:altitude heading:configuration.heading];
+    return [self applyCoordinate:coordinate altitude:altitude heading:configuration.heading];
 }
 
-- (void)applyCoordinate:(CLLocationCoordinate2D)coordinate altitude:(double)altitude heading:(double)heading {
+- (BOOL)applyCoordinate:(CLLocationCoordinate2D)coordinate altitude:(double)altitude heading:(double)heading {
     if (!GPSLabIsValidCoordinate(coordinate.latitude, coordinate.longitude)) {
-        return;
+        return NO;
     }
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
     configuration.latitude = coordinate.latitude;
@@ -2061,12 +2302,23 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     configuration.heading = GPSLabNormalizeHeading(heading);
     [[GPSLabEngine sharedEngine] applyConfiguration:configuration];
     [[GPSLabEngine sharedEngine] persistConfiguration];
+    // Record the committed coordinate (not a boolean) as proof of an intentional
+    // selection, and add it to recents (legacy proof path).
+    [[GPSLabStore sharedStore] recordCommittedSelection:
+        [[GPSLabCommittedSelection alloc] initWithLatitude:coordinate.latitude
+                                                 longitude:coordinate.longitude
+                                                  altitude:configuration.altitude]];
     [[GPSLabStore sharedStore] addRecentCoordinate:coordinate altitude:configuration.altitude];
     // A manual anchor change invalidates any scheduled ownership.
     [[GPSLabProfileApplicationCoordinator sharedCoordinator] invalidateAppliedProfile];
+    // Any explicit committed coordinate supersedes a stale preview draft.
+    if (self.hasPendingSelection) {
+        [self clearPendingSelection];
+    }
     [self updateStatusLabel];
     [self updateMapFromState];
     [self scheduleBackgroundSnapshot];
+    return YES;
 }
 
 - (void)updateMapFromState {
@@ -2530,20 +2782,73 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
     self.hasPendingSelection = YES;
     self.pendingCoordinate = coordinate;
-    self.pendingAltitude = resolvedAltitude;
+    // Assign the ivar directly: the custom altitude setter persists the draft and
+    // must not run while heading/provider are still stale (partially coherent).
+    _pendingAltitude = resolvedAltitude;
     self.pendingHeading = resolvedHeading;
     self.pendingSourceKindKey = kindKey;
     // Move the pin AND the map region so the preview is actually visible.
     self.syntheticAnnotation.coordinate = coordinate;
     [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(coordinate, 800.0, 800.0) animated:YES];
     [self updateStatusLabel];
+    // Persist once, after every field is coherent.
+    [self persistPendingSelection];
 }
 
 - (void)clearPendingSelection {
     self.hasPendingSelection = NO;
     self.pendingSourceKindKey = nil;
+    [[GPSLabStore sharedStore] clearPendingSelection];
     [self updateStatusLabel];
     [self updateMapFromState];
+}
+
+#pragma mark - Pending selection persistence
+
+/** Saves the current coherent preview as the persisted draft (UI state only). */
+- (void)persistPendingSelection {
+    if (!self.hasPendingSelection) {
+        return;
+    }
+    if (!GPSLabSelectionFieldsValid(self.pendingCoordinate.latitude,
+                                    self.pendingCoordinate.longitude,
+                                    self.pendingAltitude,
+                                    self.pendingHeading)) {
+        return;
+    }
+    GPSLabPendingSelection *selection =
+        [[GPSLabPendingSelection alloc] initWithLatitude:self.pendingCoordinate.latitude
+                                              longitude:self.pendingCoordinate.longitude
+                                               altitude:self.pendingAltitude
+                                                heading:self.pendingHeading
+                                            providerKey:self.pendingSourceKindKey];
+    [[GPSLabStore sharedStore] savePendingSelection:selection];
+}
+
+/**
+ * Restores a persisted draft into the UI once, without invoking the preview
+ * route (so the engine is never written). The map pin/readout stay stable under
+ * later engine/lifecycle updates because `hasPendingSelection` short-circuits
+ * `updateMapFromState`.
+ */
+- (void)restorePendingSelection {
+    GPSLabPendingSelection *selection = [[GPSLabStore sharedStore] loadPendingSelection];
+    if (selection == nil) {
+        return;
+    }
+    CLLocationCoordinate2D coordinate = CLLocationCoordinate2DMake(selection.latitude, selection.longitude);
+    if (!GPSLabIsValidCoordinate(coordinate.latitude, coordinate.longitude)) {
+        [[GPSLabStore sharedStore] clearPendingSelection];
+        return;
+    }
+    self.hasPendingSelection = YES;
+    self.pendingCoordinate = coordinate;
+    _pendingAltitude = selection.altitude;
+    self.pendingHeading = selection.heading;
+    self.pendingSourceKindKey = selection.providerKey;
+    self.syntheticAnnotation.coordinate = coordinate;
+    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(coordinate, 800.0, 800.0) animated:YES];
+    [self updateStatusLabel];
 }
 
 #pragma mark - Altitude
@@ -2585,6 +2890,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         self.pendingHeading = configuration.heading;
     }
     [self updateStatusLabel];
+    // The altitude edit updates the persisted draft after the state is coherent.
+    [self persistPendingSelection];
 }
 
 #pragma mark - Route annotations

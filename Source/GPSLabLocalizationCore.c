@@ -73,6 +73,11 @@ const GPSLabLocalizationEntry kGPSLabLocalizationTable[] = {
     { "favorites.rename", "\u0625\u0639\u0627\u062f\u0629 \u062a\u0633\u0645\u064a\u0629 \u0627\u0644\u0645\u0641\u0636\u0644\u0629", "Rename favorite" },
     { "favorites.empty", "\u0644\u0627 \u062a\u0648\u062c\u062f \u0645\u0641\u0636\u0644\u0627\u062a \u0628\u0639\u062f. \u0627\u0636\u063a\u0637 + \u0644\u0625\u0636\u0627\u0641\u0629 \u0648\u0627\u062d\u062f\u0629.", "No favorites yet. Tap + to add one." },
     { "favorites.accessibility.add", "\u0625\u0636\u0627\u0641\u0629 \u0645\u0641\u0636\u0644\u0629", "Add favorite" },
+    { "favorites.manage", "\u0625\u062f\u0627\u0631\u0629 \u0627\u0644\u0645\u0641\u0636\u0644\u0629", "Manage favorite" },
+    { "favorites.added", "\u062a\u0645\u062a \u0625\u0636\u0627\u0641\u0629 \u0627\u0644\u0645\u0641\u0636\u0644\u0629", "Favorite added" },
+    { "favorites.duplicate", "\u062a\u0648\u062c\u062f \u0645\u0641\u0636\u0644\u0629 \u0642\u0631\u064a\u0628\u0629 \u0628\u0627\u0644\u0641\u0639\u0644", "A nearby favorite already exists" },
+    { "favorites.originRequired", "\u0627\u062e\u062a\u0631 \u0645\u0648\u0642\u0639\u064b\u0627 \u0623\u0648\u0644\u064b\u0627", "Choose a location first" },
+    { "favorites.delete.title", "\u062d\u0630\u0641 \u0627\u0644\u0645\u0641\u0636\u0644\u0629", "Delete favorite" },
 
     // Recents
     { "recents.title", "\u0627\u0644\u0645\u0648\u0627\u0642\u0639 \u0627\u0644\u0623\u062e\u064a\u0631\u0629", "Recents" },

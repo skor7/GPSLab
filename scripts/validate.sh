@@ -684,6 +684,56 @@ if grep -r -n -E '@"(latitude|longitude)"' "$SOURCE_DIR/GPSLabOverlayPresenter.m
 fi
 pass "keep-last gating and coordinate clearing present"
 
+# ------------------------------------ Pending selection draft + favorite policy --
+echo "== Pending selection draft + favorite policy =="
+SELECTION_CORE="$SOURCE_DIR/GPSLabSelectionPolicyCore.c"
+SELECTION_CORE_H="$SOURCE_DIR/GPSLabSelectionPolicyCore.h"
+[[ -f "$SELECTION_CORE" ]] || fail "GPSLabSelectionPolicyCore.c missing"
+[[ -f "$SELECTION_CORE_H" ]] || fail "GPSLabSelectionPolicyCore.h missing"
+grep -q -F "Source/GPSLabSelectionPolicyCore.c" "$MAKEFILE" \
+    || fail "selection policy core must be compiled by the Makefile"
+# The runtime wiring reuses the shared policy core (behaviour is proven by the
+# portable C test; these guards only pin the production wiring, not the rules).
+grep -q -F '#import "GPSLabSelectionPolicyCore.h"' "$SOURCE_DIR/GPSLabStore.m" \
+    || fail "store must reuse the selection policy core"
+grep -q -F "GPSLabFavoriteSelectionAllowed" "$SOURCE_DIR/GPSLabStore.m" \
+    || fail "store must gate favorite creation through the shared policy"
+grep -q -F "GPSLabSelectionDistanceMeters" "$SOURCE_DIR/GPSLabStore.m" \
+    || fail "store must use the shared geodesic duplicate tolerance"
+grep -q -F "GPSLabProfileAltitudeValid" "$SOURCE_DIR/GPSLabStore.m" \
+    || fail "store must reject an invalid bookmark altitude before serializing"
+grep -q -F 'kGPSLabKeyPendingSelection = @"GPSLab.pendingSelection"' "$SOURCE_DIR/GPSLabStore.m" \
+    || fail "pending draft key must be exactly GPSLab.pendingSelection"
+grep -q -F "initWithUserDefaults:" "$SOURCE_DIR/GPSLabStore.m" \
+    || fail "store must expose an isolated defaults initializer seam"
+grep -q -F "savePendingSelection:" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
+    || fail "overlay must persist the pending draft"
+grep -q -F "loadPendingSelection" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
+    || fail "overlay must restore the pending draft"
+grep -q -F "clearPendingSelection" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
+    || fail "overlay must clear the pending draft on commit/cancel"
+if grep -q -F "clearPersistedCoordinate" "$SOURCE_DIR/GPSLabOverlayViewController.m"; then
+    fail "the overlay must never erase the keep-last configuration to clear a draft"
+fi
+grep -q -F "recordCommittedSelection:" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
+    || fail "overlay must record a committed-selection receipt"
+grep -q -F "addBookmarkIfNotDuplicate:" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
+    || fail "overlay must use the duplicate-aware bookmark insert"
+grep -q -F "presentFavoriteMessageKey" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
+    || fail "duplicate/origin messages must be visible native alerts (the status log has no UI)"
+grep -q -F "__weak UIAlertController" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
+    || fail "favorite alerts must use a weak alert ref to avoid a retain cycle"
+for key in favorites.manage favorites.added favorites.duplicate favorites.originRequired \
+    favorites.delete.title; do
+    grep -q -F "\"$key\"" "$SOURCE_DIR/GPSLabLocalizationCore.c" \
+        || fail "missing localized key: $key"
+done
+for testfile in tests/gpslab_selection_policy_test.c tests/gpslab_selection_wiring_test.c \
+    tests/GPSLabStoreTests.m; do
+    [[ -f "$ROOT/$testfile" ]] || fail "test missing: $testfile"
+done
+pass "pending draft persists separately; favorite policy is shared, visible and duplicate-aware"
+
 # ------------------------------------------------------ Dead code / coverage --
 echo "== Dead code and Makefile coverage =="
 if grep -r -n -F "GPSLabPassthroughView" "$SOURCE_DIR" >/dev/null 2>&1; then
