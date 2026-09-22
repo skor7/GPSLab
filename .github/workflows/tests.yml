@@ -115,6 +115,88 @@ jobs:
             -o /tmp/gpslab_search_layout_test
           /tmp/gpslab_search_layout_test
 
+  map-link-core-tests:
+    name: Map-link policy core (portable C)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portable map-link tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_map_link_test.c Source/GPSLabMapLinkCore.c \
+            -o /tmp/gpslab_map_link_test
+          /tmp/gpslab_map_link_test
+
+  map-link-resolver-tests:
+    name: Map-link resolver (macOS Foundation)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run map-link resolver tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -framework CoreLocation -ISource \
+            tests/GPSLabMapLinkResolverTests.m Source/GPSLabMapLinkResolver.m \
+            Source/GPSLabMapLinkURLSessionTransport.m Source/GPSLabMapLinkCore.c \
+            -o /tmp/gpslab-map-link-resolver-tests
+          /tmp/gpslab-map-link-resolver-tests
+
+  altitude-tests:
+    name: Altitude field policy (portable C)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portable altitude tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_altitude_test.c Source/GPSLabLocalizationCore.c \
+            Source/GPSLabProfileCore.c -o /tmp/gpslab_altitude_test
+          /tmp/gpslab_altitude_test
+
+  engine-tests:
+    name: Engine master switch + settings preservation (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run engine tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -framework CoreLocation -ISource \
+            tests/GPSLabEngineTests.m Source/GPSLabEngine.m Source/GPSLabConfiguration.m \
+            Source/GPSLabRouteSimulator.m Source/GPSLabDriftModel.m Source/GPSLabLocationFactory.m \
+            Source/GPSLabGeodesy.m Source/GPSLabTypes.m Source/GPSLabStore.m \
+            Source/CoreLocationHooks.m Source/LocationStream.m Source/Diagnostics.m \
+            -o /tmp/gpslab-engine-tests
+          /tmp/gpslab-engine-tests
+
+  master-intent-guard-tests:
+    name: Master-switch intent guard (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run master-intent guard tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -ISource \
+            tests/GPSLabMasterIntentGuardTests.m Source/GPSLabMasterIntentGuard.m \
+            -o /tmp/gpslab-master-intent-guard-tests
+          /tmp/gpslab-master-intent-guard-tests
+
   profile-core-tests:
     name: Profile schema core (portable C)
     runs-on: ubuntu-22.04

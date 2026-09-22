@@ -143,6 +143,24 @@ static NSString * const kGPSLabLanguageDefaultsKey = @"GPSLab.language";
     return [NSString stringWithFormat:@"%.*f", (int)digits, value];
 }
 
++ (NSString *)trimmedDecimalString:(double)value fractionDigits:(NSInteger)fractionDigits {
+    // POSIX/LTR value with trailing zeros (and a bare "." part) removed, so a
+    // fractional altitude is never unnecessarily truncated nor padded.
+    NSString *formatted = [self decimalString:value fractionDigits:fractionDigits];
+    NSRange dot = [formatted rangeOfString:@"."];
+    if (dot.location == NSNotFound) {
+        return formatted;
+    }
+    NSUInteger end = formatted.length;
+    while (end > dot.location + 1 && [formatted characterAtIndex:end - 1] == '0') {
+        end--;
+    }
+    if (end == dot.location + 1) {
+        end = dot.location; // drop the decimal point too
+    }
+    return [formatted substringToIndex:end];
+}
+
 + (NSString *)coordinateStringWithLatitude:(double)latitude longitude:(double)longitude {
     NSString *lat = [self decimalString:latitude fractionDigits:5];
     NSString *lon = [self decimalString:longitude fractionDigits:5];

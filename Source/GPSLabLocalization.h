@@ -73,6 +73,9 @@ FOUNDATION_EXPORT NSNotificationName const GPSLabLanguageDidChangeNotification;
 /** POSIX/LTR decimal formatting (Latin digits, "." decimal) for coordinates. */
 + (NSString *)decimalString:(double)value fractionDigits:(NSInteger)fractionDigits;
 
+/** decimalString: with trailing zeros (and a bare ".") trimmed. */
++ (NSString *)trimmedDecimalString:(double)value fractionDigits:(NSInteger)fractionDigits;
+
 /** POSIX/LTR "lat, lon" readable string; map coordinate updates are unchanged. */
 + (NSString *)coordinateStringWithLatitude:(double)latitude longitude:(double)longitude;
 

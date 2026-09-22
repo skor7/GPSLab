@@ -71,15 +71,6 @@
         return;
     }
 
-    _generation += 1;
-    NSUInteger token = _generation;
-    // A new application supersedes any pending route owned by an older request:
-    // stop it now so an invalid/rejected new apply can never leave a ghost route.
-    if (_backend != nil && _pendingRouteGeneration != 0) {
-        _pendingRouteGeneration = 0;
-        [_backend stopRoute];
-    }
-
     void (^finish)(GPSLabProfileApplicationResult *) = ^(GPSLabProfileApplicationResult *result) {
         if (completion != nil) {
             completion(result);
@@ -90,7 +81,9 @@
         finish([GPSLabProfileApplicationResult resultWithMessageKey:@"profiles.error.invalid"]);
         return;
     }
-    // Strict preflight of the whole immutable profile BEFORE any side effect.
+    // Strict preflight of the whole immutable profile and the license/enable gates
+    // BEFORE disturbing any existing state: an invalid/locked/rejected apply must
+    // leave the currently applied profile and its route untouched.
     if (![profile isValidForApplication]) {
         finish([GPSLabProfileApplicationResult resultWithMessageKey:@"profiles.error.invalid"]);
         return;
@@ -102,6 +95,15 @@
     if (![_backend isEngineEnabled]) {
         finish([GPSLabProfileApplicationResult resultWithMessageKey:@"profiles.error.engineOff"]);
         return;
+    }
+
+    // All success gates passed: a valid new application now supersedes the prior
+    // one. Stop any pending route owned by an older request so it cannot linger.
+    _generation += 1;
+    NSUInteger token = _generation;
+    if (_pendingRouteGeneration != 0) {
+        _pendingRouteGeneration = 0;
+        [_backend stopRoute];
     }
 
     id snapshot = [_backend captureSnapshot];
@@ -154,6 +156,72 @@
             dispatch_async(dispatch_get_main_queue(), resume);
         }
     }];
+}
+
+#pragma mark - Stage (engine stays OFF)
+
+- (void)stageProfile:(GPSLabProfile *)profile
+          completion:(nullable void (^)(GPSLabProfileApplicationResult *result))completion {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self stageProfile:profile completion:completion]; });
+        return;
+    }
+
+    void (^finish)(GPSLabProfileApplicationResult *) = ^(GPSLabProfileApplicationResult *result) {
+        if (completion != nil) {
+            completion(result);
+        }
+    };
+
+    if (_backend == nil || profile == nil) {
+        finish([GPSLabProfileApplicationResult resultWithMessageKey:@"profiles.error.invalid"]);
+        return;
+    }
+    // Same strict preflight + license gate as applyProfile:, and BEFORE any state
+    // change. The engine-enabled gate is intentionally skipped (engine stays OFF).
+    if (![profile isValidForApplication]) {
+        finish([GPSLabProfileApplicationResult resultWithMessageKey:@"profiles.error.invalid"]);
+        return;
+    }
+    if (![_backend isLicenseUnlocked]) {
+        finish([GPSLabProfileApplicationResult resultWithMessageKey:@"profiles.error.locked"]);
+        return;
+    }
+
+    // Gates passed: staging supersedes the prior application. Stop any prior owned
+    // active/pending route so an unrelated old route can never resume on the next
+    // enable, and clear ownership (staging is NOT an apply and owns nothing).
+    _generation += 1;
+    if (_pendingRouteGeneration != 0) {
+        _pendingRouteGeneration = 0;
+    }
+    [_backend stopRoute];
+    _appliedProfileIdentifier = nil;
+
+    if (profile.locationMode == GPSLabProfileLocationStatic) {
+        [_backend applyStaticCoordinate:CLLocationCoordinate2DMake(profile.latitude, profile.longitude)
+                               altitude:profile.altitude
+                                heading:profile.heading];
+        [_backend setDriftEnabled:profile.driftEnabled radiusMeters:profile.driftRadiusMeters];
+        [self activateModulesForProfile:profile];
+        finish([GPSLabProfileApplicationResult appliedResult]);
+        return;
+    }
+
+    GPSLabProfileRoute *route = profile.route;
+    if (route == nil) {
+        finish([GPSLabProfileApplicationResult resultWithMessageKey:@"profiles.error.invalid"]);
+        return;
+    }
+    // Stage the route's SAVED coordinate (its start) plus altitude/heading/drift.
+    // The route is NEVER started while OFF: the engine has no auto-start-on-enable
+    // behaviour, so the user must start it explicitly after the next enable.
+    [_backend applyStaticCoordinate:CLLocationCoordinate2DMake(route.startLatitude, route.startLongitude)
+                           altitude:profile.altitude
+                            heading:profile.heading];
+    [_backend setDriftEnabled:profile.driftEnabled radiusMeters:profile.driftRadiusMeters];
+    [self activateModulesForProfile:profile];
+    finish([GPSLabProfileApplicationResult appliedResult]);
 }
 
 - (void)cancelPendingApplication {

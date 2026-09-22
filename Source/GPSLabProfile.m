@@ -25,6 +25,7 @@ static NSString * const kGPSLabProfileKeyRoute = @"route";
 static NSString * const kGPSLabProfileKeyWiFi = @"wifi";
 static NSString * const kGPSLabProfileKeyBluetooth = @"bluetooth";
 static NSString * const kGPSLabProfileKeySchedule = @"schedule";
+static NSString * const kGPSLabProfileKeyEnabled = @"enabled";
 
 static NSString * const kGPSLabRouteKeyStartLatitude = @"startLatitude";
 static NSString * const kGPSLabRouteKeyStartLongitude = @"startLongitude";
@@ -387,6 +388,12 @@ static BOOL GPSLabDriftRadiusValid(double radius) {
 
 #pragma mark - Profile
 
+@interface GPSLabProfile ()
+/** Internal read-write view of the optional, backward-compatible switch state. */
+@property (nonatomic, readwrite) BOOL hasEnabledPreference;
+@property (nonatomic, readwrite) BOOL enabled;
+@end
+
 @implementation GPSLabProfile
 
 + (nullable instancetype)profileFromDictionary:(NSDictionary *)dictionary {
@@ -488,19 +495,34 @@ static BOOL GPSLabDriftRadiusValid(double radius) {
         }
     }
 
-    return [[GPSLabProfile alloc] initWithIdentifier:identifier
-                                                name:name
-                                        locationMode:(GPSLabProfileLocationMode)locationMode
-                                           latitude:latitude
-                                          longitude:longitude
-                                           altitude:altitude
-                                            heading:heading
-                                       driftEnabled:driftEnabled
-                                  driftRadiusMeters:driftRadius
-                                              route:route
-                                               wifi:wifi
-                                          bluetooth:bluetooth
-                                           schedule:schedule];
+    // Optional, backward-compatible engine-switch preference. Absent keeps the
+    // legacy semantics (no preference recorded); present-but-not-a-bool rejects.
+    BOOL hasEnabledPreference = NO;
+    BOOL enabled = YES;
+    if (dictionary[kGPSLabProfileKeyEnabled] != nil) {
+        if (!GPSLabReadBool(dictionary, kGPSLabProfileKeyEnabled, &enabled)) {
+            return nil;
+        }
+        hasEnabledPreference = YES;
+    }
+
+    GPSLabProfile *profile =
+        [[GPSLabProfile alloc] initWithIdentifier:identifier
+                                             name:name
+                                     locationMode:(GPSLabProfileLocationMode)locationMode
+                                        latitude:latitude
+                                       longitude:longitude
+                                        altitude:altitude
+                                         heading:heading
+                                    driftEnabled:driftEnabled
+                               driftRadiusMeters:driftRadius
+                                           route:route
+                                            wifi:wifi
+                                       bluetooth:bluetooth
+                                        schedule:schedule];
+    profile.hasEnabledPreference = hasEnabledPreference;
+    profile.enabled = enabled;
+    return profile;
 }
 
 - (instancetype)initWithIdentifier:(NSString *)identifier
@@ -531,6 +553,8 @@ static BOOL GPSLabDriftRadiusValid(double radius) {
         _wifi = wifi;
         _bluetooth = bluetooth;
         _schedule = schedule;
+        _hasEnabledPreference = NO;
+        _enabled = YES;
     }
     return self;
 }
@@ -560,41 +584,71 @@ static BOOL GPSLabDriftRadiusValid(double radius) {
     if (self.schedule != nil) {
         representation[kGPSLabProfileKeySchedule] = [self.schedule dictionaryRepresentation];
     }
+    // Only persisted when an explicit preference exists, so legacy profiles keep
+    // byte-identical output and old readers are unaffected.
+    if (self.hasEnabledPreference) {
+        representation[kGPSLabProfileKeyEnabled] = @(self.enabled);
+    }
     return representation;
 }
 
 - (instancetype)profileWithName:(NSString *)name {
-    return [[GPSLabProfile alloc] initWithIdentifier:self.identifier
-                                                name:name
-                                        locationMode:self.locationMode
-                                           latitude:self.latitude
-                                          longitude:self.longitude
-                                           altitude:self.altitude
-                                            heading:self.heading
-                                       driftEnabled:self.driftEnabled
-                                  driftRadiusMeters:self.driftRadiusMeters
-                                              route:self.route
-                                               wifi:self.wifi
-                                          bluetooth:self.bluetooth
-                                           schedule:self.schedule];
+    GPSLabProfile *copy = [[GPSLabProfile alloc] initWithIdentifier:self.identifier
+                                                               name:name
+                                                       locationMode:self.locationMode
+                                                          latitude:self.latitude
+                                                         longitude:self.longitude
+                                                          altitude:self.altitude
+                                                           heading:self.heading
+                                                      driftEnabled:self.driftEnabled
+                                                 driftRadiusMeters:self.driftRadiusMeters
+                                                             route:self.route
+                                                              wifi:self.wifi
+                                                         bluetooth:self.bluetooth
+                                                          schedule:self.schedule];
+    copy.hasEnabledPreference = self.hasEnabledPreference;
+    copy.enabled = self.enabled;
+    return copy;
+}
+
+- (instancetype)profileWithEnabledPreference:(BOOL)enabled {
+    GPSLabProfile *copy = [[GPSLabProfile alloc] initWithIdentifier:self.identifier
+                                                               name:self.name
+                                                       locationMode:self.locationMode
+                                                          latitude:self.latitude
+                                                         longitude:self.longitude
+                                                          altitude:self.altitude
+                                                           heading:self.heading
+                                                      driftEnabled:self.driftEnabled
+                                                 driftRadiusMeters:self.driftRadiusMeters
+                                                             route:self.route
+                                                              wifi:self.wifi
+                                                         bluetooth:self.bluetooth
+                                                          schedule:self.schedule];
+    copy.hasEnabledPreference = YES;
+    copy.enabled = enabled;
+    return copy;
 }
 
 - (instancetype)profileWithWiFi:(nullable GPSLabProfileWiFiConfig *)wifi
                       bluetooth:(nullable GPSLabProfileBluetoothConfig *)bluetooth
                        schedule:(nullable GPSLabProfileSchedule *)schedule {
-    return [[GPSLabProfile alloc] initWithIdentifier:self.identifier
-                                                name:self.name
-                                        locationMode:self.locationMode
-                                           latitude:self.latitude
-                                          longitude:self.longitude
-                                           altitude:self.altitude
-                                            heading:self.heading
-                                       driftEnabled:self.driftEnabled
-                                  driftRadiusMeters:self.driftRadiusMeters
-                                              route:self.route
-                                               wifi:wifi
-                                          bluetooth:bluetooth
-                                            schedule:schedule];
+    GPSLabProfile *copy = [[GPSLabProfile alloc] initWithIdentifier:self.identifier
+                                                               name:self.name
+                                                       locationMode:self.locationMode
+                                                          latitude:self.latitude
+                                                         longitude:self.longitude
+                                                          altitude:self.altitude
+                                                           heading:self.heading
+                                                      driftEnabled:self.driftEnabled
+                                                 driftRadiusMeters:self.driftRadiusMeters
+                                                             route:self.route
+                                                              wifi:wifi
+                                                         bluetooth:bluetooth
+                                                          schedule:schedule];
+    copy.hasEnabledPreference = self.hasEnabledPreference;
+    copy.enabled = self.enabled;
+    return copy;
 }
 
 - (BOOL)isValidForApplication {

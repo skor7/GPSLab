@@ -661,6 +661,13 @@
                                        bluetooth:bluetooth
                                         schedule:schedule];
 
+    // Preserve the optional, backward-compatible enabled preference across an edit
+    // (the typed initializer cannot carry it; the new-profile default is decided by
+    // the caller, which never overwrites an existing preference).
+    if (self.existingProfile.hasEnabledPreference) {
+        profile = [profile profileWithEnabledPreference:self.existingProfile.enabled];
+    }
+
     if (self.saveHandler != nil && self.saveHandler(profile)) {
         [self gpslab_dismissSheet];
     }

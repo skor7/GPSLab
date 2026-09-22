@@ -181,6 +181,15 @@ static GPSLabProfileApplicationResult *ApplySync(GPSLabProfileApplicationCoordin
     return captured;
 }
 
+static GPSLabProfileApplicationResult *StageSync(GPSLabProfileApplicationCoordinator *coordinator,
+                                                 GPSLabProfile *profile) {
+    __block GPSLabProfileApplicationResult *captured = nil;
+    [coordinator stageProfile:profile completion:^(GPSLabProfileApplicationResult *result) {
+        captured = result;
+    }];
+    return captured;
+}
+
 #pragma mark - Tests
 
 static void test_lock_and_enable_gating(void) {
@@ -342,7 +351,7 @@ static void test_cancel_stops_only_owned_route(void) {
           @"post-cancel completion performs no extra stopRoute");
 }
 
-static void test_invalid_new_apply_stops_ghost_pending_route(void) {
+static void test_invalid_apply_does_not_disturb_prior(void) {
     FixtureBackend *backend = [[FixtureBackend alloc] init];
     GPSLabProfileApplicationCoordinator *coordinator =
         [[GPSLabProfileApplicationCoordinator alloc] initWithBackend:backend];
@@ -352,20 +361,95 @@ static void test_invalid_new_apply_stops_ghost_pending_route(void) {
     GPSLabProfile *malformed = [[GPSLabProfile alloc] initWithIdentifier:@"bad"
                                                                      name:@"Bad"
                                                              locationMode:GPSLabProfileLocationRoute
-                                                                latitude:24.0
-                                                               longitude:46.0
-                                                                altitude:0.0
-                                                                 heading:-1.0
-                                                            driftEnabled:NO
-                                                       driftRadiusMeters:30.0
-                                                                   route:nil
-                                                                    wifi:nil
-                                                               bluetooth:nil
-                                                                schedule:nil];
+                                                                 latitude:24.0
+                                                                longitude:46.0
+                                                                 altitude:0.0
+                                                                  heading:-1.0
+                                                             driftEnabled:NO
+                                                        driftRadiusMeters:30.0
+                                                                    route:nil
+                                                                     wifi:nil
+                                                                bluetooth:nil
+                                                                 schedule:nil];
     GPSLabProfileApplicationResult *result = ApplySync(coordinator, malformed);
     CHECK(result != nil && !result.applied, @"invalid new apply rejected");
-    CHECK([backend countOfCall:@"stopRoute"] == stopsBefore + 1,
-          @"invalid new apply stops the previously owned pending route (no ghost)");
+    CHECK([backend countOfCall:@"stopRoute"] == stopsBefore,
+          @"invalid apply leaves the prior owned pending route intact (validate-before-disturb)");
+}
+
+static void test_valid_replacement_stops_prior_pending_route(void) {
+    FixtureBackend *backend = [[FixtureBackend alloc] init];
+    GPSLabProfileApplicationCoordinator *coordinator =
+        [[GPSLabProfileApplicationCoordinator alloc] initWithBackend:backend];
+    [coordinator applyProfile:RouteProfile(@"r1") completion:nil]; // pending, owned
+    NSUInteger stopsBefore = [backend countOfCall:@"stopRoute"];
+
+    GPSLabProfileApplicationResult *result = ApplySync(coordinator, StaticProfile(@"s2", NO));
+    CHECK(result != nil && result.applied, @"valid replacement applies");
+    CHECK([backend countOfCall:@"stopRoute"] > stopsBefore,
+          @"a valid replacement stops the prior owned pending route");
+    CHECK([coordinator.appliedProfileIdentifier isEqualToString:@"s2"], @"ownership moves to the new profile");
+}
+
+static void test_stage_profile_while_engine_off(void) {
+    // Static profile staged while OFF: configuration is loaded, engine stays OFF.
+    FixtureBackend *backend = [[FixtureBackend alloc] init];
+    backend.engineEnabled = NO;
+    backend.licenseUnlocked = YES;
+    GPSLabProfileApplicationCoordinator *coordinator =
+        [[GPSLabProfileApplicationCoordinator alloc] initWithBackend:backend];
+
+    GPSLabProfileApplicationResult *staged = StageSync(coordinator, StaticProfile(@"stage-s", NO));
+    CHECK(staged != nil && staged.applied, @"static profile stages while the engine is off");
+    CHECK(backend.engineEnabled == NO, @"staging never enables the engine");
+    CHECK([backend countOfCall:@"applyStatic"] == 1, @"staged static coordinate applied");
+    CHECK([backend countOfCall:@"setDrift"] == 1, @"staged drift applied");
+    CHECK(fabs(backend.lastLatitude - 24.7136) < 1e-9 && fabs(backend.lastAltitude - 612.0) < 1e-9,
+          @"staged static values recorded");
+    CHECK(coordinator.appliedProfileIdentifier == nil,
+          @"staging does not claim scheduler ownership");
+
+    // Route profile staged while OFF: the SAVED start coordinate is staged as the
+    // anchor with altitude/heading/drift; the route is never started.
+    FixtureBackend *routeBackend = [[FixtureBackend alloc] init];
+    routeBackend.engineEnabled = NO;
+    GPSLabProfileApplicationCoordinator *routeCoordinator =
+        [[GPSLabProfileApplicationCoordinator alloc] initWithBackend:routeBackend];
+    GPSLabProfileApplicationResult *routeStaged = StageSync(routeCoordinator, RouteProfile(@"stage-r"));
+    CHECK(routeStaged != nil && routeStaged.applied, @"route profile stages while off");
+    CHECK(routeBackend.engineEnabled == NO, @"route staging never enables the engine");
+    CHECK([routeBackend countOfCall:@"startRoute"] == 0, @"route staging never starts the route");
+    CHECK([routeBackend countOfCall:@"applyStatic"] == 1, @"route staging restores the saved coordinate");
+    CHECK(fabs(routeBackend.lastLatitude - 24.7136) < 1e-9 && fabs(routeBackend.lastAltitude - 700.0) < 1e-9,
+          @"route staged anchor/altitude recorded");
+    CHECK([routeBackend countOfCall:@"setDrift"] == 1, @"route staging applies drift");
+    CHECK([routeBackend countOfCall:@"stopRoute"] >= 1, @"route staging stops any prior route");
+
+    // Locked license refuses staging and performs no backend work.
+    FixtureBackend *lockedBackend = [[FixtureBackend alloc] init];
+    lockedBackend.engineEnabled = NO;
+    lockedBackend.licenseUnlocked = NO;
+    GPSLabProfileApplicationCoordinator *lockedCoordinator =
+        [[GPSLabProfileApplicationCoordinator alloc] initWithBackend:lockedBackend];
+    GPSLabProfileApplicationResult *locked = StageSync(lockedCoordinator, StaticProfile(@"stage-l", NO));
+    CHECK(locked != nil && !locked.applied, @"locked license refuses staging");
+    CHECK([locked.messageKey isEqualToString:@"profiles.error.locked"], @"staging lock message key");
+    CHECK(lockedBackend.calls.count == 0, @"locked staging performs no backend work");
+}
+
+static void test_stage_stops_prior_owned_active_route(void) {
+    FixtureBackend *backend = [[FixtureBackend alloc] init];
+    backend.engineEnabled = YES;
+    GPSLabProfileApplicationCoordinator *coordinator =
+        [[GPSLabProfileApplicationCoordinator alloc] initWithBackend:backend];
+    [coordinator applyProfile:StaticProfile(@"owned", NO) completion:nil];
+    CHECK([coordinator.appliedProfileIdentifier isEqualToString:@"owned"], @"prior apply owns a profile");
+    NSUInteger stopsBefore = [backend countOfCall:@"stopRoute"];
+
+    GPSLabProfileApplicationResult *staged = StageSync(coordinator, StaticProfile(@"stage", NO));
+    CHECK(staged != nil && staged.applied, @"staging applies after a prior apply");
+    CHECK([backend countOfCall:@"stopRoute"] > stopsBefore, @"staging stops the prior owned active route");
+    CHECK(coordinator.appliedProfileIdentifier == nil, @"staging clears prior ownership");
 }
 
 int main(void) {
@@ -378,7 +462,10 @@ int main(void) {
         test_stale_completion_is_side_effect_free();
         test_disable_or_lock_between_request_and_completion();
         test_cancel_stops_only_owned_route();
-        test_invalid_new_apply_stops_ghost_pending_route();
+        test_invalid_apply_does_not_disturb_prior();
+        test_valid_replacement_stops_prior_pending_route();
+        test_stage_profile_while_engine_off();
+        test_stage_stops_prior_owned_active_route();
     }
 
     if (gFailures == 0) {

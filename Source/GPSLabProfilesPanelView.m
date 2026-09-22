@@ -47,7 +47,7 @@
 
 - (void)build {
     self.backgroundColor = GPSLabThemeCardColor();
-    GPSLabThemeApplyCardStyle(self, 24.0);
+    GPSLabThemeApplyCardStyle(self, 22.0);
 
     self.titleLabel = [self labelWithFont:GPSLabThemeFont(18.0, UIFontWeightSemibold)];
     self.addButton = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -113,7 +113,7 @@
     summary.translatesAutoresizingMaskIntoConstraints = NO;
     UIView *summaryContainer = [[UIView alloc] initWithFrame:CGRectZero];
     summaryContainer.backgroundColor = GPSLabThemeChipColor();
-    summaryContainer.layer.cornerRadius = 14.0;
+    summaryContainer.layer.cornerRadius = 12.0;
     summaryContainer.layer.masksToBounds = YES;
     summaryContainer.layer.borderWidth = 0.5;
     summaryContainer.layer.borderColor = GPSLabThemeBorderColor().CGColor;
@@ -277,7 +277,7 @@
         UIButton *chip = [UIButton buttonWithType:UIButtonTypeSystem];
         chip.backgroundColor = selected
             ? [GPSLabThemeAccentColor() colorWithAlphaComponent:0.12] : GPSLabThemeChipColor();
-        chip.layer.cornerRadius = 16.0;
+        chip.layer.cornerRadius = 14.0;
         chip.layer.borderWidth = selected ? 1.0 : 0.5;
         chip.layer.borderColor = (selected ? GPSLabThemeAccentColor() : GPSLabThemeBorderColor()).CGColor;
         chip.layer.masksToBounds = YES;

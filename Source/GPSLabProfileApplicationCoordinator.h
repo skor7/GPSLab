@@ -85,6 +85,27 @@ NS_ASSUME_NONNULL_BEGIN
           completion:(nullable void (^)(GPSLabProfileApplicationResult *result))completion;
 
 /**
+ * Stages a profile's synthetic state while the engine stays OFF. It validates and
+ * gates on the license exactly like applyProfile:, but deliberately skips the
+ * engine-enabled gate so an explicitly disabled profile can load its saved
+ * coordinate (a route profile stages its start coordinate), altitude, heading,
+ * drift and test metadata and be usable on the next enable. It never
+ * enables/toggles the engine.
+ *
+ * Ownership: the gates run BEFORE any state change; only after they pass does it
+ * stop the prior owned active/pending route and clear ownership. Staging is not
+ * an application, so `appliedProfileIdentifier` is left nil and the scheduler is
+ * never armed.
+ *
+ * A route is NEVER started while the engine is OFF: the engine has no
+ * auto-start-on-enable behaviour, so the user must start the route explicitly
+ * after the next enable. Backward compatible: callers that never use it are
+ * unaffected.
+ */
+- (void)stageProfile:(GPSLabProfile *)profile
+          completion:(nullable void (^)(GPSLabProfileApplicationResult *result))completion;
+
+/**
  * Invalidates any in-flight application and stops ONLY the route this
  * coordinator currently owns (if any). Already-applied ownership is cleared.
  */

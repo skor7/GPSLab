@@ -14,6 +14,11 @@ GPSLab_FILES = \
 	Source/GPSLabSchedulerCore.c \
 	Source/GPSLabLocalizationCore.c \
 	Source/GPSLabLocalization.m \
+	Source/GPSLabAltitudeViewController.m \
+	Source/GPSLabMapLinkCore.c \
+	Source/GPSLabMapLinkResolver.m \
+	Source/GPSLabMapLinkURLSessionTransport.m \
+	Source/GPSLabMasterIntentGuard.m \
 	Source/GPSLabModalPolicy.c \
 	Source/GPSLabSearchLayoutCore.c \
 	Source/GPSLabGeodesy.m \

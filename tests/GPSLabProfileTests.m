@@ -155,6 +155,41 @@ static void test_model_rejection(void) {
     CHECK([GPSLabProfile profileFromDictionary:(NSDictionary *)@[]] == nil, @"non-dictionary rejected");
 }
 
+static void test_enabled_preference(void) {
+    // Legacy profile (no `enabled` key) keeps the old semantics: no preference,
+    // no silent disable, and the key is not written back on save.
+    GPSLabProfile *legacy = [GPSLabProfile profileFromDictionary:ValidProfileDictionary(@"legacy", @"Legacy")];
+    CHECK(legacy != nil, @"legacy profile parses");
+    CHECK(!legacy.hasEnabledPreference, @"legacy profile carries no enabled preference");
+    CHECK(legacy.enabled, @"legacy enabled defaults to YES (never silently disabled)");
+    CHECK(legacy.dictionaryRepresentation[@"enabled"] == nil,
+          @"legacy profile does not persist an enabled key");
+
+    // An explicit preference round-trips and is applied on both values.
+    GPSLabProfile *on = [[GPSLabProfile profileFromDictionary:ValidProfileDictionary(@"on", @"On")]
+        profileWithEnabledPreference:YES];
+    CHECK(on.hasEnabledPreference && on.enabled, @"explicit enabled YES recorded");
+    CHECK([on.dictionaryRepresentation[@"enabled"] boolValue], @"enabled YES persisted");
+    GPSLabProfile *onAgain = [GPSLabProfile profileFromDictionary:on.dictionaryRepresentation];
+    CHECK(onAgain.hasEnabledPreference && onAgain.enabled, @"enabled YES round-trips");
+
+    GPSLabProfile *off = [[GPSLabProfile profileFromDictionary:ValidProfileDictionary(@"off", @"Off")]
+        profileWithEnabledPreference:NO];
+    CHECK(off.hasEnabledPreference && !off.enabled, @"explicit enabled NO recorded");
+    GPSLabProfile *offAgain = [GPSLabProfile profileFromDictionary:off.dictionaryRepresentation];
+    CHECK(offAgain.hasEnabledPreference && !offAgain.enabled, @"enabled NO round-trips");
+
+    // A present-but-non-boolean enabled value rejects the profile.
+    NSMutableDictionary *broken = [ValidProfileDictionary(@"bad", @"Bad") mutableCopy];
+    broken[@"enabled"] = @"yes";
+    CHECK([GPSLabProfile profileFromDictionary:broken] == nil,
+          @"present-but-non-boolean enabled rejected");
+
+    // The other copy helpers preserve the preference.
+    CHECK([on profileWithName:@"Renamed"].hasEnabledPreference, @"name copy preserves enabled");
+    CHECK([on profileWithWiFi:nil bluetooth:nil schedule:nil].enabled, @"attachment copy preserves enabled");
+}
+
 static void test_attachment_clearing(void) {
     NSMutableDictionary *full = [ValidProfileDictionary(@"id", @"Full") mutableCopy];
     full[@"wifi"] = ValidWiFiDictionary();
@@ -465,6 +500,7 @@ int main(void) {
     @autoreleasepool {
         test_model_parsing();
         test_model_rejection();
+        test_enabled_preference();
         test_attachment_clearing();
         test_store_roundtrip();
         test_store_atomic_repeated_writes();

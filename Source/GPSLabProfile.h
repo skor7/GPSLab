@@ -126,6 +126,17 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) BOOL driftEnabled;
 @property (nonatomic, readonly) double driftRadiusMeters;
 
+/**
+ * Whether the profile carries an explicit engine-switch preference. Profiles
+ * saved before this field existed have this NO and keep the original semantics:
+ * applying them never changes the master engine switch. A profile that records
+ * an explicit preference lets the UI restore that switch through the existing
+ * `setEnabledAndNotify:` path (never through the coordinator or the scheduler).
+ */
+@property (nonatomic, readonly) BOOL hasEnabledPreference;
+/** The saved engine switch state; only meaningful when hasEnabledPreference is YES. */
+@property (nonatomic, readonly) BOOL enabled;
+
 @property (nonatomic, readonly, nullable) GPSLabProfileRoute *route;
 @property (nonatomic, readonly, nullable) GPSLabProfileWiFiConfig *wifi;
 @property (nonatomic, readonly, nullable) GPSLabProfileBluetoothConfig *bluetooth;
@@ -166,6 +177,12 @@ NS_ASSUME_NONNULL_BEGIN
 
 /** A copy with a replaced name (identifier and everything else preserved). */
 - (instancetype)profileWithName:(NSString *)name;
+
+/**
+ * A copy that records an explicit engine-switch preference (backward
+ * compatible: the optional `enabled` key is only written when present).
+ */
+- (instancetype)profileWithEnabledPreference:(BOOL)enabled;
 
 /**
  * A copy with the experimental attachments replaced/cleared. Passing nil clears

@@ -49,7 +49,7 @@
     [scrollView addSubview:stack];
 
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectZero];
-    title.text = @"GPSLab";
+    title.text = GPSLabLocalized(@"overlay.title");
     title.font = [UIFont preferredFontForTextStyle:UIFontTextStyleLargeTitle];
     title.adjustsFontForContentSizeCategory = YES;
 

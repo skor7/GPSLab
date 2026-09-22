@@ -19,6 +19,8 @@
 #import <CoreLocation/CoreLocation.h>
 #import <MapKit/MapKit.h>
 
+#include <math.h>
+
 // UIButton.contentEdgeInsets is deprecated under UIButtonConfiguration (iOS 15)
 // but remains the supported API for the plain, configuration-less buttons used
 // here. The deprecation is suppressed narrowly for this file.
@@ -31,7 +33,11 @@
 #import "GPSLabGeodesy.h"
 #import "GPSLabLicenseManager.h"
 #import "GPSLabLocalization.h"
+#import "GPSLabAltitudeViewController.h"
 #import "GPSLabManualEntryViewController.h"
+#import "GPSLabMapLinkCore.h"
+#import "GPSLabMapLinkResolver.h"
+#import "GPSLabMasterIntentGuard.h"
 #import "GPSLabModalCoordinator.h"
 #import "GPSLabOptionsViewController.h"
 #import "GPSLabOverlayPresenter.h"
@@ -129,11 +135,22 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 @property (nonatomic, strong) UIView *masterDot;
 @property (nonatomic, strong) UIButton *closeButton;
 
+// Service (master engine switch) row
+@property (nonatomic, strong) UIView *serviceRowView;
+@property (nonatomic, strong) UILabel *serviceTitleLabel;
+@property (nonatomic, strong) UILabel *serviceHintLabel;
+@property (nonatomic, strong) UILabel *serviceStateLabel;
+@property (nonatomic, strong) UISwitch *serviceSwitch;
+
 // Search
 @property (nonatomic, strong) UIView *searchBarContainer;
 @property (nonatomic, strong, nullable) UISearchBar *searchBar;
 @property (nonatomic, strong, nullable) GPSLabSearchResultsViewController *searchResultsController;
 @property (nonatomic, strong, nullable) NSLayoutConstraint *resultHeightConstraint;
+@property (nonatomic, strong) UIView *searchSourceView;
+@property (nonatomic, strong) UILabel *searchSourceTextLabel;
+@property (nonatomic, strong) UILabel *searchSourceKindLabel;
+@property (nonatomic, strong, nullable) NSLayoutConstraint *searchSourceHeightConstraint;
 @property (nonatomic, strong) UIScrollView *bodyScrollView;
 @property (nonatomic, strong) UIStackView *bodyStack;
 @property (nonatomic, strong, nullable) UITapGestureRecognizer *outsideTapRecognizer;
@@ -205,12 +222,24 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 @property (nonatomic, strong, nullable) CLLocationManager *displayLocationManager;
 @property (nonatomic, strong, nullable) MKPointAnnotation *realLocationAnnotation;
 
+// Pending (preview) selection: shown on the map/coords but NOT written to the
+// engine until the user taps Apply.
+@property (nonatomic, assign) BOOL hasPendingSelection;
+@property (nonatomic, assign) CLLocationCoordinate2D pendingCoordinate;
+@property (nonatomic, assign) double pendingAltitude;
+@property (nonatomic, assign) double pendingHeading;
+@property (nonatomic, strong, nullable) NSString *pendingSourceKindKey;
+
 @property (nonatomic, strong, nullable) NSTimer *tickTimer;
 @property (nonatomic, strong, nullable) NSTimer *snapshotTimer;
 
 @property (nonatomic, copy) NSArray<GPSLabProfile *> *profiles;
 @property (nonatomic, copy, nullable) NSString *selectedProfileIdentifier;
 @property (nonatomic, copy, nullable) NSString *appliedProfileIdentifier;
+
+// Owns master-switch intents so a superseded/cancelled profile apply can never
+// roll back or mutate a newer switch change. The same object is unit-tested.
+@property (nonatomic, strong) GPSLabMasterIntentGuard *masterIntentGuard;
 
 @end
 
@@ -228,10 +257,12 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.view.backgroundColor = GPSLabThemePanelColor();
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
     self.mapStyle = GPSLabMapStyleStandard;
+    self.masterIntentGuard = [[GPSLabMasterIntentGuard alloc] init];
 
     [self buildBackground];
     [self buildPanel];
     [self buildHeader];
+    [self buildServiceRow];
     [self buildSearchBar];
     [self buildBody];
     [self installOutsideTapRecognizer];
@@ -273,6 +304,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 }
 
 - (void)dealloc {
+    [[GPSLabMapLinkResolver sharedResolver] cancel];
     [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self stopTickTimer];
     [self.snapshotTimer invalidate];
@@ -347,32 +379,32 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     [self.panelView addSubview:self.headerView];
 
     self.languageButton = [self chromeButtonWithTitle:@"EN" action:@selector(languageTapped)];
-    self.languageButton.titleLabel.font = GPSLabThemeFont(15.0, UIFontWeightBold);
-    self.languageButton.layer.cornerRadius = 14.0;
+    self.languageButton.titleLabel.font = GPSLabThemeFont(13.0, UIFontWeightBold);
+    self.languageButton.layer.cornerRadius = 12.0;
     self.languageButton.layer.borderWidth = 1.0;
     self.languageButton.layer.borderColor = GPSLabThemeBorderColor().CGColor;
     self.languageButton.backgroundColor = GPSLabColorFromHex(0x1A1A20);
-    self.languageButton.contentEdgeInsets = UIEdgeInsetsMake(10.0, 13.0, 10.0, 13.0);
+    self.languageButton.contentEdgeInsets = UIEdgeInsetsMake(8.0, 10.0, 8.0, 10.0);
 
     self.infoButton = [self chromeButtonWithTitle:@"ⓘ" action:@selector(infoTapped)];
-    self.infoButton.titleLabel.font = GPSLabThemeFont(20.0, UIFontWeightBold);
-    self.infoButton.layer.cornerRadius = 14.0;
+    self.infoButton.titleLabel.font = GPSLabThemeFont(19.0, UIFontWeightBold);
+    self.infoButton.layer.cornerRadius = 12.0;
     self.infoButton.layer.borderWidth = 1.0;
     self.infoButton.layer.borderColor = GPSLabThemeBorderColor().CGColor;
     self.infoButton.backgroundColor = GPSLabColorFromHex(0x1A1A20);
 
     self.headerTitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    self.headerTitleLabel.font = GPSLabThemeFont(34.0, UIFontWeightHeavy);
+    self.headerTitleLabel.font = GPSLabThemeFont(29.0, UIFontWeightHeavy);
     self.headerTitleLabel.textColor = GPSLabThemeTextColor();
     self.headerTitleLabel.textAlignment = NSTextAlignmentCenter;
-    // Nominal reference size stays 34pt; shrink-to-fit keeps "GPSLab" on one line
+    // Nominal reference size stays 29pt; shrink-to-fit keeps "موقع" on one line
     // on narrow iPhones (360/375) without moving the header row.
     self.headerTitleLabel.adjustsFontSizeToFitWidth = YES;
     self.headerTitleLabel.minimumScaleFactor = 0.6;
     self.headerTitleLabel.numberOfLines = 1;
     self.headerTitleLabel.lineBreakMode = NSLineBreakByTruncatingTail;
     self.headerSubtitleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
-    self.headerSubtitleLabel.font = GPSLabThemeFont(15.0, UIFontWeightRegular);
+    self.headerSubtitleLabel.font = GPSLabThemeFont(13.0, UIFontWeightRegular);
     self.headerSubtitleLabel.textColor = GPSLabColorFromHex(0xB9A1D2);
     self.headerSubtitleLabel.textAlignment = NSTextAlignmentCenter;
     self.headerSubtitleLabel.adjustsFontSizeToFitWidth = YES;
@@ -402,8 +434,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     ]];
 
     self.closeButton = [self chromeButtonWithTitle:@"✕" action:@selector(closeTapped)];
-    self.closeButton.titleLabel.font = GPSLabThemeFont(22.0, UIFontWeightSemibold);
-    self.closeButton.layer.cornerRadius = 14.0;
+    self.closeButton.titleLabel.font = GPSLabThemeFont(27.0, UIFontWeightSemibold);
+    self.closeButton.layer.cornerRadius = 13.0;
     self.closeButton.layer.borderWidth = 1.0;
     self.closeButton.layer.borderColor = GPSLabThemeBorderColor().CGColor;
     self.closeButton.backgroundColor = GPSLabColorFromHex(0x1A1A20);
@@ -413,7 +445,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     ]];
     row.axis = UILayoutConstraintAxisHorizontal;
     row.alignment = UIStackViewAlignmentCenter;
-    row.spacing = 10.0;
+    row.spacing = 8.0;
     row.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
     row.translatesAutoresizingMaskIntoConstraints = NO;
     [self.headerView addSubview:row];
@@ -423,16 +455,69 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [self.headerView.leadingAnchor constraintEqualToAnchor:self.panelView.leadingAnchor],
         [self.headerView.trailingAnchor constraintEqualToAnchor:self.panelView.trailingAnchor],
         [row.topAnchor constraintEqualToAnchor:self.headerView.topAnchor],
-        [row.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:18.0],
-        [row.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-18.0],
+        [row.leadingAnchor constraintEqualToAnchor:self.headerView.leadingAnchor constant:16.0],
+        [row.trailingAnchor constraintEqualToAnchor:self.headerView.trailingAnchor constant:-16.0],
         [row.bottomAnchor constraintEqualToAnchor:self.headerView.bottomAnchor],
-        [self.infoButton.widthAnchor constraintEqualToConstant:44.0],
-        [self.infoButton.heightAnchor constraintEqualToConstant:44.0],
-        [self.closeButton.widthAnchor constraintEqualToConstant:46.0],
-        [self.closeButton.heightAnchor constraintEqualToConstant:46.0],
-        [self.languageButton.heightAnchor constraintEqualToConstant:44.0],
+        [self.infoButton.widthAnchor constraintEqualToConstant:39.0],
+        [self.infoButton.heightAnchor constraintEqualToConstant:39.0],
+        [self.closeButton.widthAnchor constraintEqualToConstant:41.0],
+        [self.closeButton.heightAnchor constraintEqualToConstant:41.0],
+        [self.languageButton.heightAnchor constraintEqualToConstant:41.0],
     ]];
     [self.languageButton setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+}
+
+- (void)buildServiceRow {
+    self.serviceRowView = [[UIView alloc] initWithFrame:CGRectZero];
+    self.serviceRowView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.serviceRowView.backgroundColor = GPSLabColorFromHex(0x141419);
+    self.serviceRowView.layer.cornerRadius = 15.0;
+    self.serviceRowView.layer.masksToBounds = YES;
+    self.serviceRowView.layer.borderWidth = 0.5;
+    self.serviceRowView.layer.borderColor = GPSLabColorFromHex(0x2D2D35).CGColor;
+    [self.panelView addSubview:self.serviceRowView];
+
+    self.serviceTitleLabel = [self themedLabel:14.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
+    self.serviceTitleLabel.text = GPSLabLocalized(@"service.title");
+    self.serviceHintLabel = [self themedLabel:10.5 weight:UIFontWeightRegular color:GPSLabColorFromHex(0x8E8E96)];
+    self.serviceHintLabel.text = GPSLabLocalized(@"service.hint.enabled");
+    UIStackView *serviceCopy = [[UIStackView alloc] initWithArrangedSubviews:@[ self.serviceTitleLabel, self.serviceHintLabel ]];
+    serviceCopy.axis = UILayoutConstraintAxisVertical;
+    serviceCopy.spacing = 3.0;
+    serviceCopy.translatesAutoresizingMaskIntoConstraints = NO;
+
+    self.serviceStateLabel = [self themedLabel:11.0 weight:UIFontWeightBold color:GPSLabThemeGreenColor()];
+    self.serviceStateLabel.text = GPSLabLocalized(@"service.state.enabled");
+
+    // The single master engine switch, reusing the existing setEnabledAndNotify:
+    // path. OFF is passthrough only; it never stops the host manager/app and never
+    // erases configuration, profiles, history or licensing.
+    self.serviceSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
+    self.serviceSwitch.translatesAutoresizingMaskIntoConstraints = NO;
+    self.serviceSwitch.onTintColor = GPSLabThemeGreenColor();
+    self.serviceSwitch.accessibilityLabel = GPSLabLocalized(@"service.accessibility");
+    [self.serviceSwitch addTarget:self action:@selector(masterTapped) forControlEvents:UIControlEventValueChanged];
+
+    UIStackView *right = [[UIStackView alloc] initWithArrangedSubviews:@[ self.serviceStateLabel, self.serviceSwitch ]];
+    right.axis = UILayoutConstraintAxisHorizontal;
+    right.alignment = UIStackViewAlignmentCenter;
+    right.spacing = 10.0;
+    right.translatesAutoresizingMaskIntoConstraints = NO;
+
+    [self.serviceRowView addSubview:serviceCopy];
+    [self.serviceRowView addSubview:right];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.serviceRowView.topAnchor constraintEqualToAnchor:self.headerView.bottomAnchor constant:7.0],
+        [self.serviceRowView.leadingAnchor constraintEqualToAnchor:self.panelView.leadingAnchor constant:20.0],
+        [self.serviceRowView.trailingAnchor constraintEqualToAnchor:self.panelView.trailingAnchor constant:-20.0],
+        [serviceCopy.topAnchor constraintEqualToAnchor:self.serviceRowView.topAnchor constant:10.0],
+        [serviceCopy.bottomAnchor constraintEqualToAnchor:self.serviceRowView.bottomAnchor constant:-10.0],
+        [serviceCopy.leadingAnchor constraintEqualToAnchor:self.serviceRowView.leadingAnchor constant:12.0],
+        [right.leadingAnchor constraintGreaterThanOrEqualToAnchor:serviceCopy.trailingAnchor constant:8.0],
+        [right.trailingAnchor constraintEqualToAnchor:self.serviceRowView.trailingAnchor constant:-12.0],
+        [right.centerYAnchor constraintEqualToAnchor:self.serviceRowView.centerYAnchor],
+    ]];
+    [serviceCopy setContentCompressionResistancePriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisHorizontal];
 }
 
 - (UIButton *)chromeButtonWithTitle:(NSString *)title action:(SEL)action {
@@ -476,15 +561,47 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.searchBar = bar;
     [self.searchBarContainer addSubview:bar];
 
-    // FIXED bar height from the pure C helper; the reference search row is 62pt.
+    // FIXED bar height from the pure C helper; the reference search row is 54pt.
     CGFloat intrinsicHeight = bar.intrinsicContentSize.height;
     if (!(intrinsicHeight > 0.0)) {
         intrinsicHeight = 56.0;
     }
-    CGFloat barHeight = GPSLabSearchBarHeight(intrinsicHeight, 62.0);
+    CGFloat barHeight = GPSLabSearchBarHeight(intrinsicHeight, 54.0);
+
+    // Light Google/Apple Maps banner, hidden until a maps link is recognised.
+    self.searchSourceView = [[UIView alloc] initWithFrame:CGRectZero];
+    self.searchSourceView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.searchSourceView.backgroundColor = GPSLabColorFromHex(0x101014);
+    self.searchSourceView.layer.cornerRadius = 12.0;
+    self.searchSourceView.layer.masksToBounds = YES;
+    self.searchSourceView.layer.borderWidth = 0.5;
+    self.searchSourceView.layer.borderColor = GPSLabColorFromHex(0x292930).CGColor;
+    self.searchSourceView.hidden = YES;
+    [self.panelView addSubview:self.searchSourceView];
+
+    self.searchSourceTextLabel = [self themedLabel:11.0 weight:UIFontWeightRegular color:GPSLabColorFromHex(0xA8A8B0)];
+    self.searchSourceTextLabel.numberOfLines = 1;
+    self.searchSourceKindLabel = [self themedLabel:11.0 weight:UIFontWeightSemibold color:GPSLabThemeAccentSoftColor()];
+    self.searchSourceKindLabel.textAlignment = NSTextAlignmentRight;
+    [self.searchSourceKindLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    UIStackView *sourceRow = [[UIStackView alloc] initWithArrangedSubviews:@[ self.searchSourceTextLabel, self.searchSourceKindLabel ]];
+    sourceRow.axis = UILayoutConstraintAxisHorizontal;
+    sourceRow.alignment = UIStackViewAlignmentCenter;
+    sourceRow.spacing = 10.0;
+    sourceRow.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.searchSourceView addSubview:sourceRow];
+
+    NSLayoutConstraint *searchSourceHeight = [self.searchSourceView.heightAnchor constraintEqualToConstant:0.0];
+    self.searchSourceHeightConstraint = searchSourceHeight;
+    // The banner's content constraints are non-required so the collapse-to-zero
+    // height never produces a required-constraint conflict while hidden.
+    NSLayoutConstraint *sourceTop = [sourceRow.topAnchor constraintEqualToAnchor:self.searchSourceView.topAnchor constant:7.0];
+    NSLayoutConstraint *sourceBottom = [sourceRow.bottomAnchor constraintEqualToAnchor:self.searchSourceView.bottomAnchor constant:-7.0];
+    sourceTop.priority = 999.0;
+    sourceBottom.priority = 999.0;
 
     [NSLayoutConstraint activateConstraints:@[
-        [self.searchBarContainer.topAnchor constraintEqualToAnchor:self.headerView.bottomAnchor constant:10.0],
+        [self.searchBarContainer.topAnchor constraintEqualToAnchor:self.serviceRowView.bottomAnchor constant:10.0],
         [self.searchBarContainer.leadingAnchor constraintEqualToAnchor:self.panelView.leadingAnchor constant:20.0],
         [self.searchBarContainer.trailingAnchor constraintEqualToAnchor:self.panelView.trailingAnchor constant:-20.0],
         [self.searchBarContainer.heightAnchor constraintEqualToConstant:barHeight],
@@ -493,6 +610,14 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [bar.leadingAnchor constraintEqualToAnchor:self.searchBarContainer.leadingAnchor constant:6.0],
         [bar.trailingAnchor constraintEqualToAnchor:self.searchBarContainer.trailingAnchor constant:-6.0],
         [bar.heightAnchor constraintEqualToConstant:barHeight],
+        [self.searchSourceView.topAnchor constraintEqualToAnchor:self.searchBarContainer.bottomAnchor constant:6.0],
+        [self.searchSourceView.leadingAnchor constraintEqualToAnchor:self.panelView.leadingAnchor constant:20.0],
+        [self.searchSourceView.trailingAnchor constraintEqualToAnchor:self.panelView.trailingAnchor constant:-20.0],
+        searchSourceHeight,
+        sourceTop,
+        sourceBottom,
+        [sourceRow.leadingAnchor constraintEqualToAnchor:self.searchSourceView.leadingAnchor constant:10.0],
+        [sourceRow.trailingAnchor constraintEqualToAnchor:self.searchSourceView.trailingAnchor constant:-10.0],
     ]];
 
     [self mountSearchResultsChild];
@@ -520,7 +645,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     bottomLimit.priority = 999.0;
 
     [NSLayoutConstraint activateConstraints:@[
-        [resultsView.topAnchor constraintEqualToAnchor:self.searchBarContainer.bottomAnchor constant:8.0],
+        [resultsView.topAnchor constraintEqualToAnchor:self.searchSourceView.bottomAnchor constant:8.0],
         [resultsView.leadingAnchor constraintEqualToAnchor:self.panelView.leadingAnchor constant:20.0],
         [resultsView.trailingAnchor constraintEqualToAnchor:self.panelView.trailingAnchor constant:-20.0],
         height,
@@ -589,6 +714,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     [self.searchResultsController cancelActiveSearch];
     [self.searchResultsController endSearchSession];
     GPSLabSearchSessionEnd(&_searchSession);
+    [[GPSLabMapLinkResolver sharedResolver] cancel];
+    [self hideSearchSource];
     self.searchBar.text = @"";
     self.searchBar.showsCancelButton = NO;
     if (wasActive) {
@@ -654,7 +781,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.mapCard = [[UIView alloc] initWithFrame:CGRectZero];
     self.mapCard.translatesAutoresizingMaskIntoConstraints = NO;
     self.mapCard.backgroundColor = GPSLabColorFromHex(0xE8E7DF);
-    self.mapCard.layer.cornerRadius = 24.0;
+    self.mapCard.layer.cornerRadius = 22.0;
     self.mapCard.layer.masksToBounds = YES;
     self.mapCard.layer.borderWidth = 1.0;
     self.mapCard.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.08].CGColor;
@@ -722,7 +849,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.favoritesCard = [[UIView alloc] initWithFrame:CGRectZero];
     self.favoritesCard.translatesAutoresizingMaskIntoConstraints = NO;
     self.favoritesCard.backgroundColor = GPSLabThemeCardColor();
-    self.favoritesCard.layer.cornerRadius = 24.0;
+    self.favoritesCard.layer.cornerRadius = 22.0;
     self.favoritesCard.layer.masksToBounds = YES;
     self.favoritesCard.layer.borderWidth = 0.5;
     self.favoritesCard.layer.borderColor = GPSLabThemeBorderColor().CGColor;
@@ -744,11 +871,11 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [self.mapCard.topAnchor constraintEqualToAnchor:container.topAnchor],
         [self.mapCard.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
         [self.mapCard.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        [self.mapCard.heightAnchor constraintEqualToConstant:278.0],
+        [self.mapCard.heightAnchor constraintEqualToConstant:246.0],
         [self.favoritesCard.topAnchor constraintEqualToAnchor:container.topAnchor],
         [self.favoritesCard.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
         [self.favoritesCard.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        [self.favoritesCard.heightAnchor constraintEqualToConstant:278.0],
+        [self.favoritesCard.heightAnchor constraintEqualToConstant:246.0],
         [self.favoritesCard.bottomAnchor constraintEqualToAnchor:container.bottomAnchor],
         [favoritesScroll.topAnchor constraintEqualToAnchor:self.favoritesCard.topAnchor constant:12.0],
         [favoritesScroll.bottomAnchor constraintEqualToAnchor:self.favoritesCard.bottomAnchor constant:-12.0],
@@ -771,12 +898,12 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     [button setImage:[UIImage systemImageNamed:symbol withConfiguration:configuration] forState:UIControlStateNormal];
     button.tintColor = UIColor.whiteColor;
     button.backgroundColor = GPSLabColorFromHex(0x26262C);
-    button.layer.cornerRadius = 14.0;
+    button.layer.cornerRadius = 12.0;
     button.layer.masksToBounds = YES;
     [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
     [NSLayoutConstraint activateConstraints:@[
-        [button.widthAnchor constraintEqualToConstant:46.0],
-        [button.heightAnchor constraintEqualToConstant:46.0],
+        [button.widthAnchor constraintEqualToConstant:42.0],
+        [button.heightAnchor constraintEqualToConstant:42.0],
     ]];
     return button;
 }
@@ -786,7 +913,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 - (UIView *)controlCardView {
     self.controlCard = [[UIView alloc] initWithFrame:CGRectZero];
     self.controlCard.backgroundColor = GPSLabThemeCardColor();
-    GPSLabThemeApplyCardStyle(self.controlCard, 24.0);
+    GPSLabThemeApplyCardStyle(self.controlCard, 22.0);
 
     self.mapFavoritesSegment = [[UISegmentedControl alloc] initWithItems:@[@"", @""]];
     self.mapFavoritesSegment.selectedSegmentIndex = 0;
@@ -798,37 +925,58 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.staticRouteSegment.selectedSegmentTintColor = GPSLabThemeAccentColor();
     [self.staticRouteSegment addTarget:self action:@selector(staticRouteChanged) forControlEvents:UIControlEventValueChanged];
 
-    self.coordsTitleLabel = [self themedLabel:13.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
-    self.coordsBigLabel = [self themedLabel:24.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
+    self.coordsTitleLabel = [self themedLabel:12.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    self.coordsBigLabel = [self themedLabel:20.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
     self.coordsBigLabel.numberOfLines = 2;
     [GPSLabLocalization forceLeftToRight:self.coordsBigLabel];
 
     NSArray<NSString *> *coordKeys = @[@"panel.coord.latitude", @"panel.coord.longitude", @"panel.coord.altitude"];
     NSMutableArray<UILabel *> *coordValues = [NSMutableArray array];
     NSMutableArray<UIView *> *coordBoxes = [NSMutableArray array];
-    for (NSString *key in coordKeys) {
-        UIView *box = [[UIView alloc] initWithFrame:CGRectZero];
+    for (NSUInteger index = 0; index < coordKeys.count; index++) {
+        NSString *key = coordKeys[index];
+        BOOL isAltitude = (index == coordKeys.count - 1);
+        UIView *box;
+        if (isAltitude) {
+            // Reference altitude box: tappable, opens the altitude editor. Editing
+            // only updates the preview; the engine is written on Apply.
+            UIButton *altitudeButton = [UIButton buttonWithType:UIButtonTypeCustom];
+            [altitudeButton addTarget:self action:@selector(altitudeTapped) forControlEvents:UIControlEventTouchUpInside];
+            box = altitudeButton;
+        } else {
+            box = [[UIView alloc] initWithFrame:CGRectZero];
+        }
         box.backgroundColor = GPSLabColorFromHex(0x0F0F12);
         box.layer.cornerRadius = 13.0;
-        UILabel *caption = [self themedLabel:12.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+        UILabel *caption = [self themedLabel:11.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
         caption.textAlignment = NSTextAlignmentCenter;
         caption.accessibilityIdentifier = key;
-        UILabel *value = [self themedLabel:18.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
+        UILabel *value = [self themedLabel:17.0 weight:UIFontWeightSemibold color:GPSLabThemeTextColor()];
         value.textAlignment = NSTextAlignmentCenter;
         value.adjustsFontSizeToFitWidth = YES;
         value.minimumScaleFactor = 0.6;
         [GPSLabLocalization forceLeftToRight:value];
         [coordValues addObject:value];
-        UIStackView *cell = [[UIStackView alloc] initWithArrangedSubviews:@[ caption, value ]];
+        NSMutableArray<UIView *> *cellViews = [@[ caption, value ] mutableCopy];
+        if (isAltitude) {
+            UILabel *edit = [self themedLabel:9.5 weight:UIFontWeightSemibold color:GPSLabColorFromHex(0xA98CFF)];
+            edit.accessibilityIdentifier = @"altitude.edit";
+            edit.text = GPSLabLocalized(@"altitude.edit");
+            edit.textAlignment = NSTextAlignmentCenter;
+            [cellViews addObject:edit];
+        }
+        UIStackView *cell = [[UIStackView alloc] initWithArrangedSubviews:cellViews];
         cell.axis = UILayoutConstraintAxisVertical;
-        cell.spacing = 6.0;
+        cell.spacing = 4.0;
         cell.translatesAutoresizingMaskIntoConstraints = NO;
+        cell.userInteractionEnabled = NO; // let the altitude button receive taps
         [box addSubview:cell];
         [NSLayoutConstraint activateConstraints:@[
-            [cell.topAnchor constraintEqualToAnchor:box.topAnchor constant:10.0],
-            [cell.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-10.0],
-            [cell.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:8.0],
-            [cell.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-8.0],
+            [cell.topAnchor constraintEqualToAnchor:box.topAnchor constant:9.0],
+            [cell.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-9.0],
+            [cell.leadingAnchor constraintEqualToAnchor:box.leadingAnchor constant:7.0],
+            [cell.trailingAnchor constraintEqualToAnchor:box.trailingAnchor constant:-7.0],
+            [box.heightAnchor constraintGreaterThanOrEqualToConstant:70.0],
         ]];
         [coordBoxes addObject:box];
     }
@@ -836,18 +984,18 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     UIStackView *coordGrid = [[UIStackView alloc] initWithArrangedSubviews:coordBoxes];
     coordGrid.axis = UILayoutConstraintAxisHorizontal;
     coordGrid.distribution = UIStackViewDistributionFillEqually;
-    coordGrid.spacing = 8.0;
+    coordGrid.spacing = 7.0;
 
     self.headingView = [[GPSLabHeadingView alloc] initWithFrame:CGRectZero];
     self.headingView.translatesAutoresizingMaskIntoConstraints = NO;
     self.headingView.heading = 0.0;
-    self.headingValueLabel = [self themedLabel:15.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    self.headingValueLabel = [self themedLabel:14.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
     [GPSLabLocalization forceLeftToRight:self.headingValueLabel];
-    [self.headingView.heightAnchor constraintEqualToConstant:28.0].active = YES;
+    [self.headingView.heightAnchor constraintEqualToConstant:24.0].active = YES;
     UIStackView *headingRow = [[UIStackView alloc] initWithArrangedSubviews:@[ self.headingView, self.headingValueLabel ]];
     headingRow.axis = UILayoutConstraintAxisHorizontal;
     headingRow.alignment = UIStackViewAlignmentCenter;
-    headingRow.spacing = 12.0;
+    headingRow.spacing = 10.0;
     [self.headingValueLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
 
     // Toggles
@@ -863,9 +1011,9 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.scheduleButton.titleLabel.font = GPSLabThemeFont(13.0, UIFontWeightMedium);
     [self.scheduleButton setTitleColor:GPSLabThemeAccentSoftColor() forState:UIControlStateNormal];
     self.scheduleButton.backgroundColor = GPSLabColorFromHex(0x2B2B30);
-    self.scheduleButton.layer.cornerRadius = 14.0;
+    self.scheduleButton.layer.cornerRadius = 12.0;
     self.scheduleButton.layer.masksToBounds = YES;
-    self.scheduleButton.contentEdgeInsets = UIEdgeInsetsMake(10.0, 14.0, 10.0, 14.0);
+    self.scheduleButton.contentEdgeInsets = UIEdgeInsetsMake(8.0, 12.0, 8.0, 12.0);
     [self.scheduleButton addTarget:self action:@selector(scheduleTapped) forControlEvents:UIControlEventTouchUpInside];
 
     self.routeSection = [self routeSectionView];
@@ -884,10 +1032,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     column.translatesAutoresizingMaskIntoConstraints = NO;
     [self.controlCard addSubview:column];
     [NSLayoutConstraint activateConstraints:@[
-        [column.topAnchor constraintEqualToAnchor:self.controlCard.topAnchor constant:16.0],
-        [column.bottomAnchor constraintEqualToAnchor:self.controlCard.bottomAnchor constant:-16.0],
-        [column.leadingAnchor constraintEqualToAnchor:self.controlCard.leadingAnchor constant:16.0],
-        [column.trailingAnchor constraintEqualToAnchor:self.controlCard.trailingAnchor constant:-16.0],
+        [column.topAnchor constraintEqualToAnchor:self.controlCard.topAnchor constant:14.0],
+        [column.bottomAnchor constraintEqualToAnchor:self.controlCard.bottomAnchor constant:-14.0],
+        [column.leadingAnchor constraintEqualToAnchor:self.controlCard.leadingAnchor constant:14.0],
+        [column.trailingAnchor constraintEqualToAnchor:self.controlCard.trailingAnchor constant:-14.0],
     ]];
     return self.controlCard;
 }
@@ -1209,11 +1357,13 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.infoButton.accessibilityLabel = GPSLabLocalized(@"overlay.info");
     self.headerTitleLabel.text = GPSLabLocalized(@"overlay.title");
     self.headerSubtitleLabel.text = GPSLabLocalized(@"overlay.subtitle");
+    self.serviceTitleLabel.text = GPSLabLocalized(@"service.title");
     self.closeButton.accessibilityLabel = GPSLabLocalized(@"common.close");
     [self updateMasterAppearance];
 
     self.searchBar.placeholder = GPSLabLocalized(@"overlay.search.placeholder");
     self.searchBar.accessibilityLabel = GPSLabLocalized(@"overlay.search.placeholder");
+    [self updateSearchSourceForText:self.searchBar.text];
 
     [self.mapFavoritesSegment setTitle:GPSLabLocalized(@"panel.tab.map") forSegmentAtIndex:0];
     [self.mapFavoritesSegment setTitle:GPSLabLocalized(@"panel.tab.favorites") forSegmentAtIndex:1];
@@ -1273,10 +1423,20 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.masterButton.accessibilityLabel = enabled ? GPSLabLocalized(@"overlay.accessibility.master.enabled")
                                                   : GPSLabLocalized(@"overlay.accessibility.master.disabled");
     self.masterButton.accessibilityHint = GPSLabLocalized(@"overlay.enabled");
+
+    // Service row: the single master switch (same setEnabledAndNotify: path).
+    self.serviceSwitch.on = enabled;
+    self.serviceStateLabel.text = GPSLabLocalized(enabled ? @"service.state.enabled" : @"service.state.disabled");
+    self.serviceStateLabel.textColor = enabled ? GPSLabThemeGreenColor() : GPSLabColorFromHex(0x9A9AA2);
+    self.serviceHintLabel.text = GPSLabLocalized(enabled ? @"service.hint.enabled" : @"service.hint.disabled");
+    self.serviceSwitch.accessibilityLabel = GPSLabLocalized(@"service.accessibility");
     [self updateStatusLabel];
 }
 
 - (void)masterTapped {
+    // A manual switch interaction is a newer intent: it invalidates any pending
+    // profile apply so that apply can never roll back this change.
+    [self.masterIntentGuard invalidateIntents];
     BOOL next = ![GPSLabEngine sharedEngine].isEnabled;
     if (!next) {
         [[GPSLabScheduler sharedScheduler] noteManualEngineDisable];
@@ -1298,6 +1458,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 }
 
 - (void)closeTapped {
+    [[GPSLabMapLinkResolver sharedResolver] cancel];
+    [self.searchResultsController cancelActiveSearch];
     [[GPSLabScheduler sharedScheduler] cancelPending];
     [[GPSLabProfileApplicationCoordinator sharedCoordinator] cancelPendingApplication];
     [[GPSLabOverlayPresenter sharedPresenter] dismissOverlay];
@@ -1401,6 +1563,13 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [self startRouteFromPending];
         return;
     }
+    if (self.hasPendingSelection) {
+        // Commit the previewed selection through the existing engine path.
+        [self applyCoordinate:self.pendingCoordinate altitude:self.pendingAltitude heading:self.pendingHeading];
+        [self clearPendingSelection];
+        [self endActiveSearch];
+        return;
+    }
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
     [self applyCoordinate:configuration.coordinate altitude:configuration.altitude heading:configuration.heading];
     [self endActiveSearch];
@@ -1408,6 +1577,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 - (void)cancelTapped {
     [self endActiveSearch];
+    [self clearPendingSelection];
     [self loadConfigurationIntoUI];
     [self updateTabVisibility];
 }
@@ -1493,19 +1663,26 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 }
 
 - (BOOL)saveProfileFromForm:(GPSLabProfile *)profile editing:(BOOL)editing {
+    // A NEW profile captures the live master-switch state; an EDIT preserves the
+    // profile's existing optional preference (never overwritten by unrelated live
+    // state). Legacy profiles stay legacy on edit. Backward compatible.
+    GPSLabProfile *toSave = profile;
+    if (!editing) {
+        toSave = [profile profileWithEnabledPreference:[GPSLabEngine sharedEngine].isEnabled];
+    }
     GPSLabProfileStore *store = [GPSLabProfileStore sharedStore];
     NSError *error = nil;
-    BOOL success = editing ? [store updateProfile:profile error:&error]
-                           : [store addProfile:profile error:&error];
+    BOOL success = editing ? [store updateProfile:toSave error:&error]
+                           : [store addProfile:toSave error:&error];
     if (!success) {
         [self presentErrorKey:(error.code == GPSLabProfileStoreErrorCapacity
                               ? @"profiles.error.capacity" : @"profiles.error.save")];
         return NO;
     }
-    self.selectedProfileIdentifier = profile.identifier;
-    [store setSelectedProfileIdentifier:profile.identifier error:NULL];
+    self.selectedProfileIdentifier = toSave.identifier;
+    [store setSelectedProfileIdentifier:toSave.identifier error:NULL];
     [self reloadProfiles];
-    [self rearmAppliedProfileIfNeeded:profile];
+    [self rearmAppliedProfileIfNeeded:toSave];
     return YES;
 }
 
@@ -1538,6 +1715,74 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 }
 
 - (void)applyProfile:(GPSLabProfile *)profile {
+    // Preflight WITHOUT touching the switch, so an invalid or locked profile can
+    // never enable/disable the engine. The coordinator re-checks authoritatively.
+    if (![profile isValidForApplication]) {
+        [self presentErrorKey:@"profiles.error.invalid"];
+        return;
+    }
+    if (![[GPSLabLicenseManager sharedManager] isUnlocked]) {
+        [self presentErrorKey:@"profiles.error.locked"];
+        return;
+    }
+
+    BOOL wasEnabled = [GPSLabEngine sharedEngine].isEnabled;
+    // A profile apply claims the master-switch intent. Any newer intent — another
+    // apply or a manual switch change — invalidates this one, so a superseded or
+    // cancelled completion can never roll back or mutate newer state.
+    NSUInteger intent = [self.masterIntentGuard beginIntent];
+
+    // Explicitly DISABLED profile: after the gates, switch OFF, then stage the saved
+    // configuration while OFF. The manual-disable intent is latched only when this
+    // intent still owns the switch.
+    if (profile.hasEnabledPreference && !profile.enabled) {
+        BOOL switchWasChanged = wasEnabled;
+        if (switchWasChanged) {
+            [[GPSLabEngine sharedEngine] setEnabledAndNotify:NO];
+            [self updateMasterAppearance];
+        }
+        GPSLabProfileApplicationCoordinator *coordinator = [GPSLabProfileApplicationCoordinator sharedCoordinator];
+        __weak GPSLabOverlayViewController *weakSelf = self;
+        [coordinator stageProfile:profile completion:^(GPSLabProfileApplicationResult *result) {
+            GPSLabOverlayViewController *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            GPSLabMasterIntentResolution resolution =
+                [strongSelf.masterIntentGuard resolveIntent:intent
+                                                     applied:result.applied
+                                          switchWasChanged:switchWasChanged];
+            if (resolution == GPSLabMasterIntentResolutionIgnoreStale) {
+                return; // superseded/cancelled: no rollback, no UI, no schedule
+            }
+            if (resolution == GPSLabMasterIntentResolutionRollback) {
+                [[GPSLabEngine sharedEngine] setEnabledAndNotify:YES];
+                [strongSelf updateMasterAppearance];
+                [strongSelf presentErrorKey:result.messageKey ?: @"profiles.error.invalid"];
+                return;
+            }
+            if (resolution == GPSLabMasterIntentResolutionFailureNoChange) {
+                [strongSelf presentErrorKey:result.messageKey ?: @"profiles.error.invalid"];
+                return;
+            }
+            [[GPSLabScheduler sharedScheduler] noteManualEngineDisable];
+            [GPSLabStatusLog append:GPSLabLocalized(@"overlay.engine.disabled")];
+            [strongSelf updateMasterAppearance];
+            [strongSelf applyStagedProfileUI:profile];
+        }];
+        return;
+    }
+
+    // Explicitly ENABLED profile: the gates passed, so it is now safe to restore
+    // the switch. The completion rolls back ONLY while this intent still owns the
+    // switch (a newer apply or manual change must not be clobbered).
+    BOOL enabledSwitchChanged = profile.hasEnabledPreference && profile.enabled && !wasEnabled;
+    if (enabledSwitchChanged) {
+        [[GPSLabEngine sharedEngine] setEnabledAndNotify:YES];
+        [GPSLabStatusLog append:GPSLabLocalized(@"overlay.engine.enabled")];
+        [self updateMasterAppearance];
+    }
+
     GPSLabProfileApplicationCoordinator *coordinator = [GPSLabProfileApplicationCoordinator sharedCoordinator];
     __weak GPSLabOverlayViewController *weakSelf = self;
     [coordinator applyProfile:profile completion:^(GPSLabProfileApplicationResult *result) {
@@ -1545,7 +1790,20 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         if (strongSelf == nil) {
             return;
         }
-        if (!result.applied) {
+        GPSLabMasterIntentResolution resolution =
+            [strongSelf.masterIntentGuard resolveIntent:intent
+                                                 applied:result.applied
+                                      switchWasChanged:enabledSwitchChanged];
+        if (resolution == GPSLabMasterIntentResolutionIgnoreStale) {
+            return; // superseded/cancelled: never touch newer state or the schedule
+        }
+        if (resolution == GPSLabMasterIntentResolutionRollback) {
+            [[GPSLabEngine sharedEngine] setEnabledAndNotify:NO];
+            [strongSelf updateMasterAppearance];
+            [strongSelf presentErrorKey:result.messageKey ?: @"profiles.error.invalid"];
+            return;
+        }
+        if (resolution == GPSLabMasterIntentResolutionFailureNoChange) {
             [strongSelf presentErrorKey:result.messageKey ?: @"profiles.error.invalid"];
             return;
         }
@@ -1555,6 +1813,27 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [strongSelf updateMapFromState];
         [strongSelf scheduleBackgroundSnapshot];
     }];
+}
+
+/** Shows a staged (disabled) profile's configuration and pending route UI. */
+- (void)applyStagedProfileUI:(GPSLabProfile *)profile {
+    [self loadConfigurationIntoUI];
+    [self updateMapFromState];
+    // Restore the saved route endpoints + settings for an explicit later start.
+    // A staged/disabled profile never auto-starts the route on enable.
+    if (profile.locationMode == GPSLabProfileLocationRoute && profile.route != nil) {
+        GPSLabProfileRoute *route = profile.route;
+        self.pendingRouteStartItem = [self mapItemForCoordinate:CLLocationCoordinate2DMake(route.startLatitude, route.startLongitude)
+                                                           name:GPSLabLocalized(@"route.annotation.start")];
+        self.pendingRouteEndItem = [self mapItemForCoordinate:CLLocationCoordinate2DMake(route.endLatitude, route.endLongitude)
+                                                         name:GPSLabLocalized(@"route.annotation.end")];
+        self.routeModeSegment.selectedSegmentIndex = (NSInteger)route.mode;
+        self.routeSpeedSlider.value = route.customSpeedKmh > 0.0 ? route.customSpeedKmh : 50.0;
+        [self updateRouteAnnotations];
+    }
+    [self updateRouteControls];
+    [self updateScheduleDisplay:profile.schedule];
+    [self scheduleBackgroundSnapshot];
 }
 
 /** Re-arms the scheduler ONLY when the edited profile is the applied one. */
@@ -1732,6 +2011,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     };
     options.mapStyleHandler = ^(NSInteger style) { [weakSelf applyMapStyle:style]; };
     options.engineEnabledHandler = ^(BOOL enabled) {
+        [weakSelf.masterIntentGuard invalidateIntents];
         weakSelf.masterButton.enabled = YES;
         if (!enabled) {
             [[GPSLabScheduler sharedScheduler] noteManualEngineDisable];
@@ -1790,6 +2070,11 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 }
 
 - (void)updateMapFromState {
+    if (self.hasPendingSelection) {
+        // A preview pin must stay stable under engine notifications: the engine
+        // anchor is only reflected on the map after Apply or Cancel resets it.
+        return;
+    }
     CLLocationCoordinate2D anchor = [[GPSLabEngine sharedEngine] baseCoordinate];
     self.syntheticAnnotation.coordinate = anchor;
 }
@@ -1878,6 +2163,12 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         return;
     }
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
+    if (self.hasPendingSelection) {
+        // Route Apply must honour the chosen altitude/heading through the existing
+        // configuration -> synthetic path (applyConfiguration: sanitizes it).
+        configuration.altitude = self.pendingAltitude;
+        configuration.heading = self.pendingHeading;
+    }
     configuration.routeMode = (GPSLabRouteMode)self.routeModeSegment.selectedSegmentIndex;
     configuration.routeCustomSpeedKmh = self.routeSpeedSlider.value;
     configuration.stopBehavior = (self.routeStopBehaviorSegment.selectedSegmentIndex == 1)
@@ -1901,6 +2192,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         }
         [strongSelf updateRouteControls];
     }];
+    [self clearPendingSelection];
     [self updateRouteControls];
 }
 
@@ -2029,17 +2321,33 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     if (!GPSLabSearchSessionIsActive(&_searchSession)) {
         GPSLabSearchSessionBegin(&_searchSession);
     }
+    [[GPSLabMapLinkResolver sharedResolver] cancel];
     searchBar.showsCancelButton = YES;
     [self setSearchResultsVisible:YES];
-    [self.searchResultsController updateSearchResultsForQuery:searchBar.text ?: @""];
+    if ([self searchHandleMapLinkInput:searchBar.text ?: @""]) {
+        [self.searchResultsController cancelActiveSearch];
+        [self setSearchResultsVisible:NO];
+    } else {
+        [self.searchResultsController updateSearchResultsForQuery:searchBar.text ?: @""];
+    }
 }
 
 - (void)searchBar:(UISearchBar *)searchBar textDidChange:(NSString *)searchText {
     (void)searchBar;
+    // EVERY input transition invalidates any in-flight link resolution, so a late
+    // result from a superseded short link can never win.
+    [[GPSLabMapLinkResolver sharedResolver] cancel];
     if (!GPSLabSearchSessionIsActive(&_searchSession)) {
         return;
     }
-    [self.searchResultsController updateSearchResultsForQuery:searchText ?: @""];
+    if ([self searchHandleMapLinkInput:searchText ?: @""]) {
+        // Switching to maps mode also drops any pending place search.
+        [self.searchResultsController cancelActiveSearch];
+        [self setSearchResultsVisible:NO];
+    } else {
+        [self setSearchResultsVisible:YES];
+        [self.searchResultsController updateSearchResultsForQuery:searchText ?: @""];
+    }
 }
 
 - (void)searchBarTextDidEndEditing:(UISearchBar *)searchBar {
@@ -2047,11 +2355,14 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 }
 
 - (void)searchBarSearchButtonClicked:(UISearchBar *)searchBar {
+    [[GPSLabMapLinkResolver sharedResolver] cancel];
     if (GPSLabSearchSessionCanCommit(&_searchSession)) {
         GPSLabSearchSessionCommit(&_searchSession);
     }
-    if (GPSLabSearchSessionIsActive(&_searchSession)) {
-        [self.searchResultsController updateSearchResultsForQuery:searchBar.text ?: @""];
+    if (![self searchHandleMapLinkInput:searchBar.text ?: @""]) {
+        if (GPSLabSearchSessionIsActive(&_searchSession)) {
+            [self.searchResultsController updateSearchResultsForQuery:searchBar.text ?: @""];
+        }
     }
     [searchBar resignFirstResponder];
 }
@@ -2065,8 +2376,215 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     if (item == nil) {
         return;
     }
-    [self applyCoordinate:item.placemark.coordinate altitude:[[GPSLabEngine sharedEngine] configuration].altitude];
+    // Preview only: the map pin and coordinate readout move, but the synthetic
+    // engine is not written until the user taps Apply.
+    GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
+    [self previewCoordinate:item.placemark.coordinate
+              sourceKindKey:nil
+                   altitude:configuration.altitude
+                    heading:configuration.heading];
     [self endActiveSearch];
+}
+
+#pragma mark - Map-link search
+
+- (GPSLabMapLink)mapLinkForText:(nullable NSString *)text {
+    NSString *value = text ?: @"";
+    return GPSLabMapLinkParseText(value.UTF8String, [value lengthOfBytesUsingEncoding:NSUTF8StringEncoding]);
+}
+
+- (nullable NSString *)sourceKindKeyForKind:(GPSLabMapLinkKind)kind {
+    switch (kind) {
+        case GPSLabMapLinkKindGoogle:
+            return @"search.source.google";
+        case GPSLabMapLinkKindApple:
+            return @"search.source.apple";
+        default:
+            return nil;
+    }
+}
+
+- (void)showSearchSourceWithText:(NSString *)text kindKey:(nullable NSString *)kindKey {
+    self.searchSourceTextLabel.text = text;
+    if (kindKey.length > 0) {
+        self.searchSourceKindLabel.text = GPSLabLocalized(kindKey);
+        self.searchSourceKindLabel.hidden = NO;
+    } else {
+        self.searchSourceKindLabel.text = @"";
+        self.searchSourceKindLabel.hidden = YES;
+    }
+    self.searchSourceView.hidden = NO;
+    self.searchSourceHeightConstraint.active = NO; // content-driven height
+}
+
+- (void)hideSearchSource {
+    self.searchSourceView.hidden = YES;
+    self.searchSourceHeightConstraint.active = YES; // collapse to zero
+}
+
+- (void)updateSearchSourceForText:(nullable NSString *)text {
+    GPSLabMapLink link = [self mapLinkForText:text];
+    switch (link.result) {
+        case GPSLabMapLinkParseCoordinates:
+        case GPSLabMapLinkParseURLWithCoordinates: {
+            NSString *coords = [GPSLabLocalization coordinateStringWithLatitude:link.latitude
+                                                                      longitude:link.longitude];
+            [self showSearchSourceWithText:[NSString stringWithFormat:GPSLabLocalized(@"search.source.extracted"), coords]
+                                   kindKey:[self sourceKindKeyForKind:link.kind]];
+            break;
+        }
+        case GPSLabMapLinkParseShortLink:
+            [self showSearchSourceWithText:GPSLabLocalized(@"search.source.short")
+                                   kindKey:[self sourceKindKeyForKind:link.kind]];
+            break;
+        case GPSLabMapLinkParseRejected:
+            [self showSearchSourceWithText:GPSLabLocalized(@"search.source.untrusted") kindKey:nil];
+            break;
+        case GPSLabMapLinkParseNone:
+        default:
+            [self hideSearchSource];
+            break;
+    }
+}
+
+/** Returns YES when the text is a maps link candidate (so no place search runs). */
+- (BOOL)searchHandleMapLinkInput:(nullable NSString *)text {
+    GPSLabMapLink link = [self mapLinkForText:text];
+    switch (link.result) {
+        case GPSLabMapLinkParseCoordinates: {
+            NSString *coords = [GPSLabLocalization coordinateStringWithLatitude:link.latitude
+                                                                      longitude:link.longitude];
+            [self showSearchSourceWithText:[NSString stringWithFormat:GPSLabLocalized(@"search.source.extracted"), coords]
+                                   kindKey:nil];
+            [self previewCoordinate:CLLocationCoordinate2DMake(link.latitude, link.longitude)
+                      sourceKindKey:nil];
+            return YES;
+        }
+        case GPSLabMapLinkParseURLWithCoordinates: {
+            NSString *kindKey = [self sourceKindKeyForKind:link.kind];
+            NSString *coords = [GPSLabLocalization coordinateStringWithLatitude:link.latitude
+                                                                      longitude:link.longitude];
+            [self showSearchSourceWithText:[NSString stringWithFormat:GPSLabLocalized(@"search.source.extracted"), coords]
+                                   kindKey:kindKey];
+            [self previewCoordinate:CLLocationCoordinate2DMake(link.latitude, link.longitude)
+                      sourceKindKey:kindKey];
+            return YES;
+        }
+        case GPSLabMapLinkParseShortLink:
+            [self showSearchSourceWithText:GPSLabLocalized(@"search.source.short")
+                                   kindKey:[self sourceKindKeyForKind:link.kind]];
+            [self resolveShortLink:(text ?: @"")];
+            return YES;
+        case GPSLabMapLinkParseRejected:
+            [self showSearchSourceWithText:GPSLabLocalized(@"search.source.untrusted") kindKey:nil];
+            return YES;
+        case GPSLabMapLinkParseNone:
+        default:
+            [self hideSearchSource];
+            return NO;
+    }
+}
+
+- (void)resolveShortLink:(NSString *)text {
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    [[GPSLabMapLinkResolver sharedResolver] resolveText:text
+        completion:^(GPSLabMapLinkResolverResult *result) {
+            GPSLabOverlayViewController *strongSelf = weakSelf;
+            if (strongSelf == nil) {
+                return;
+            }
+            // A late result after the session ended must never preview or banner.
+            if (!GPSLabSearchSessionIsActive(&strongSelf->_searchSession)) {
+                return;
+            }
+            if (result.isSuccess) {
+                NSString *coords = [GPSLabLocalization coordinateStringWithLatitude:result.coordinate.latitude
+                                                                          longitude:result.coordinate.longitude];
+                [strongSelf showSearchSourceWithText:[NSString stringWithFormat:GPSLabLocalized(@"search.source.extracted"), coords]
+                                           kindKey:result.sourceKindKey];
+                [strongSelf previewCoordinate:result.coordinate sourceKindKey:result.sourceKindKey];
+            } else {
+                [strongSelf showSearchSourceWithText:GPSLabLocalized(@"search.source.untrusted") kindKey:nil];
+            }
+        }];
+}
+
+- (void)previewCoordinate:(CLLocationCoordinate2D)coordinate sourceKindKey:(nullable NSString *)kindKey {
+    [self previewCoordinate:coordinate
+              sourceKindKey:kindKey
+                   altitude:[[GPSLabEngine sharedEngine] configuration].altitude
+                    heading:[[GPSLabEngine sharedEngine] configuration].heading];
+}
+
+- (void)previewCoordinate:(CLLocationCoordinate2D)coordinate
+            sourceKindKey:(nullable NSString *)kindKey
+                 altitude:(double)altitude
+                  heading:(double)heading {
+    if (!GPSLabIsValidCoordinate(coordinate.latitude, coordinate.longitude)) {
+        return;
+    }
+    // Preserve a user-edited pending altitude/heading across a new selection; only
+    // fall back to the supplied (current engine) value when none is pending.
+    double resolvedAltitude = self.hasPendingSelection ? self.pendingAltitude : altitude;
+    double resolvedHeading = self.hasPendingSelection ? self.pendingHeading : heading;
+
+    self.hasPendingSelection = YES;
+    self.pendingCoordinate = coordinate;
+    self.pendingAltitude = resolvedAltitude;
+    self.pendingHeading = resolvedHeading;
+    self.pendingSourceKindKey = kindKey;
+    // Move the pin AND the map region so the preview is actually visible.
+    self.syntheticAnnotation.coordinate = coordinate;
+    [self.mapView setRegion:MKCoordinateRegionMakeWithDistance(coordinate, 800.0, 800.0) animated:YES];
+    [self updateStatusLabel];
+}
+
+- (void)clearPendingSelection {
+    self.hasPendingSelection = NO;
+    self.pendingSourceKindKey = nil;
+    [self updateStatusLabel];
+    [self updateMapFromState];
+}
+
+#pragma mark - Altitude
+
+- (NSString *)altitudeStringForValue:(double)value {
+    // POSIX/LTR with up to 3 decimals, trailing zeros trimmed (shared helper):
+    // never unnecessarily truncate a fractional existing altitude.
+    return [GPSLabLocalization trimmedDecimalString:value fractionDigits:3];
+}
+
+- (void)altitudeTapped {
+    GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
+    double current = self.hasPendingSelection ? self.pendingAltitude : configuration.altitude;
+    // Reference-styled unit card presented through the existing sheet coordinator
+    // (not UIAlertController). It validates finite/range itself and only calls back
+    // with a valid value; it never writes the engine — setPendingAltitude: updates
+    // the preview and the engine is written only on the main Apply.
+    GPSLabAltitudeViewController *editor = [[GPSLabAltitudeViewController alloc] init];
+    editor.initialValue = current;
+    GPSLabOverlayViewController *__weak weakSelf = self;
+    editor.applyHandler = ^(double value) {
+        [weakSelf setPendingAltitude:value];
+    };
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:editor completion:nil];
+}
+
+- (void)setPendingAltitude:(double)altitude {
+    // No new clamping is introduced here: the existing engine/profile path owns
+    // range policy. Non-finite input is refused rather than silently coerced.
+    if (!isfinite(altitude)) {
+        return;
+    }
+    _pendingAltitude = altitude;
+    if (!self.hasPendingSelection) {
+        // Editing altitude alone previews the current anchor with the new value.
+        GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
+        self.hasPendingSelection = YES;
+        self.pendingCoordinate = configuration.coordinate;
+        self.pendingHeading = configuration.heading;
+    }
+    [self updateStatusLabel];
 }
 
 #pragma mark - Route annotations
@@ -2310,20 +2828,29 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 - (void)updateStatusLabel {
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
+    // A pending (preview) selection is displayed but not committed to the engine.
+    CLLocationCoordinate2D displayCoordinate = configuration.coordinate;
+    double displayAltitude = configuration.altitude;
+    double displayHeading = configuration.heading;
+    if (self.hasPendingSelection) {
+        displayCoordinate = self.pendingCoordinate;
+        displayAltitude = self.pendingAltitude;
+        displayHeading = self.pendingHeading;
+    }
     [GPSLabLocalization forceLeftToRight:self.coordsBigLabel];
     self.coordsBigLabel.text = [NSString stringWithFormat:@"%@ %.6f\n%@ %.6f",
                                 GPSLabLocalized(@"panel.coord.latitude"),
-                                configuration.latitude,
+                                displayCoordinate.latitude,
                                 GPSLabLocalized(@"panel.coord.longitude"),
-                                configuration.longitude];
+                                displayCoordinate.longitude];
     if (self.coordValueLabels.count >= 3) {
-        self.coordValueLabels[0].text = [GPSLabLocalization decimalString:configuration.latitude fractionDigits:5];
-        self.coordValueLabels[1].text = [GPSLabLocalization decimalString:configuration.longitude fractionDigits:5];
-        self.coordValueLabels[2].text = [GPSLabLocalization decimalString:configuration.altitude fractionDigits:0];
+        self.coordValueLabels[0].text = [GPSLabLocalization decimalString:displayCoordinate.latitude fractionDigits:5];
+        self.coordValueLabels[1].text = [GPSLabLocalization decimalString:displayCoordinate.longitude fractionDigits:5];
+        self.coordValueLabels[2].text = [self altitudeStringForValue:displayAltitude];
     }
-    self.headingView.heading = configuration.heading;
+    self.headingView.heading = displayHeading;
     self.headingValueLabel.text = [NSString stringWithFormat:GPSLabLocalized(@"panel.heading.format"),
-                                   [NSString stringWithFormat:@"°%03.0f", configuration.heading < 0.0 ? 0.0 : configuration.heading]];
+                                   [NSString stringWithFormat:@"°%03.0f", displayHeading < 0.0 ? 0.0 : displayHeading]];
     self.driftSwitch.on = configuration.driftEnabled;
     self.keepLastSwitch.on = configuration.keepLastCoordinate;
     self.driftSwitch.accessibilityLabel = GPSLabLocalized(@"panel.toggle.drift");

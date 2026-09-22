@@ -307,27 +307,197 @@ grep -q -F "[self.panelView.bottomAnchor constraintEqualToAnchor:safe.bottomAnch
     || fail "panel must be pinned to the safe-area bottom"
 grep -q -F "[self.headerView.topAnchor constraintEqualToAnchor:self.panelView.topAnchor" "$OVERLAY" \
     || fail "header must be pinned inside the panel"
-grep -q -F "[self.searchBarContainer.topAnchor constraintEqualToAnchor:self.headerView.bottomAnchor" "$OVERLAY" \
-    || fail "search bar must be pinned below the header"
+grep -q -F "[self.searchBarContainer.topAnchor constraintEqualToAnchor:self.serviceRowView.bottomAnchor" "$OVERLAY" \
+    || fail "search bar must be pinned below the service row"
+grep -q -F "[self.serviceRowView.topAnchor constraintEqualToAnchor:self.headerView.bottomAnchor" "$OVERLAY" \
+    || fail "service row must be pinned below the header"
 grep -q -F "[self.mapCard addSubview:mapView]" "$OVERLAY" \
     || fail "the interactive MKMapView must be added to the visible map card"
-grep -q -F "[self.mapCard.heightAnchor constraintEqualToConstant:278.0]" "$OVERLAY" \
-    || fail "the map card must be the reference 278pt tall"
-grep -q -F "self.mapCard.layer.cornerRadius = 24.0" "$OVERLAY" \
-    || fail "map card must use the reference 24pt radius"
+grep -q -F "[self.mapCard.heightAnchor constraintEqualToConstant:246.0]" "$OVERLAY" \
+    || fail "the map card must be the reference 246pt tall"
+grep -q -F "self.mapCard.layer.cornerRadius = 22.0" "$OVERLAY" \
+    || fail "map card must use the reference 22pt radius"
 grep -q -F "mapView.scrollEnabled = YES" "$OVERLAY" \
     || fail "the map card must remain interactive"
 grep -q -F "[self.bodyStack addArrangedSubview:[self mapAreaContainer]]" "$OVERLAY" \
     || fail "the map card must live in the scrolling body"
-grep -q -F "GPSLabSearchBarHeight(intrinsicHeight, 62.0)" "$OVERLAY" \
-    || fail "the reference search row must be 62pt"
+grep -q -F "GPSLabSearchBarHeight(intrinsicHeight, 54.0)" "$OVERLAY" \
+    || fail "the reference search row must be 54pt"
 grep -q -F "MKMapSnapshotOptions" "$OVERLAY" \
     || fail "the dimmed map background must use a lightweight MapKit snapshot"
 grep -q -F "GPSLabProfilesPanelView" "$OVERLAY" \
     || fail "the reference profiles card must be hosted by the overlay"
 grep -q -F "subscription.compact.title" "$OVERLAY" \
     || fail "the compact read-only subscription footer must be present"
-pass "one compact panel; pinned header/search; real 278pt interactive map card; scroll body"
+pass "one compact panel; pinned header/service/search; real 246pt interactive map card; scroll body"
+
+# ---------------------------------------------- Service / map-link / altitude --
+echo "== Service row, map links, altitude =="
+# The master switch reuses the single engine path; OFF is passthrough only.
+grep -q -F "@selector(masterTapped)" "$OVERLAY" \
+    || fail "the service row must reuse the existing master engine toggle"
+grep -q -F "setEnabledAndNotify:" "$OVERLAY" \
+    || fail "the service row must drive the engine through setEnabledAndNotify:"
+grep -q -F "noteManualEngineDisable" "$OVERLAY" \
+    || fail "disabling the service must keep the scheduler's manual-disable intent"
+if grep -q -F "suspendAllSyntheticPreservingIntent" "$OVERLAY"; then
+    fail "the service switch must never suspend/tear down the synthetic runtime"
+fi
+if grep -q -F "clearPersistedCoordinate" "$OVERLAY"; then
+    fail "the service switch must never erase persisted configuration"
+fi
+
+# Map-link policy core is the single source of truth, compiled and ref-strict.
+[[ -f "$SOURCE_DIR/GPSLabMapLinkCore.c" ]] || fail "GPSLabMapLinkCore.c missing"
+[[ -f "$SOURCE_DIR/GPSLabMapLinkCore.h" ]] || fail "GPSLabMapLinkCore.h missing"
+grep -q -F "Source/GPSLabMapLinkCore.c" "$MAKEFILE" \
+    || fail "map-link core must be compiled by the Makefile"
+[[ -f "$SOURCE_DIR/GPSLabMapLinkResolver.m" ]] || fail "GPSLabMapLinkResolver.m missing"
+grep -q -F "Source/GPSLabMapLinkResolver.m" "$MAKEFILE" \
+    || fail "map-link resolver must be compiled by the Makefile"
+[[ -f "$SOURCE_DIR/GPSLabMapLinkURLSessionTransport.m" ]] || fail "GPSLabMapLinkURLSessionTransport.m missing"
+grep -q -F "Source/GPSLabMapLinkURLSessionTransport.m" "$MAKEFILE" \
+    || fail "map-link transport must be compiled by the Makefile"
+TRANSPORT="$SOURCE_DIR/GPSLabMapLinkURLSessionTransport.m"
+ALTVC="$SOURCE_DIR/GPSLabAltitudeViewController.m"
+INTENT="$SOURCE_DIR/GPSLabMasterIntentGuard.m"
+[[ -f "$SOURCE_DIR/GPSLabMapLinkURLSessionTransportTesting.h" ]] \
+    || fail "GPSLabMapLinkURLSessionTransportTesting.h missing"
+[[ -f "$SOURCE_DIR/GPSLabAltitudeViewController.m" ]] || fail "GPSLabAltitudeViewController.m missing"
+grep -q -F "Source/GPSLabAltitudeViewController.m" "$MAKEFILE" \
+    || fail "altitude editor must be compiled by the Makefile"
+[[ -f "$INTENT" ]] || fail "GPSLabMasterIntentGuard.m missing"
+grep -q -F "Source/GPSLabMasterIntentGuard.m" "$MAKEFILE" \
+    || fail "master-intent guard must be compiled by the Makefile"
+grep -q -F '#import "GPSLabMapLinkCore.h"' "$TRANSPORT" \
+    || fail "the transport must reuse the policy core (no duplicated rules)"
+grep -q -F '#import "GPSLabMapLinkCore.h"' "$SOURCE_DIR/GPSLabMapLinkResolver.m" \
+    || fail "the resolver must reuse the policy core (no duplicated rules)"
+# The resolver consumes the transport seam (per-request identity, injectable).
+grep -q -F '#import "GPSLabMapLinkTransport.h"' "$SOURCE_DIR/GPSLabMapLinkResolver.m" \
+    || fail "the resolver must depend on the transport seam"
+grep -q -F "initWithTransport:" "$SOURCE_DIR/GPSLabMapLinkResolver.m" \
+    || fail "the resolver must allow an injected transport (offline tests)"
+grep -q -F "_activeText" "$SOURCE_DIR/GPSLabMapLinkResolver.m" \
+    || fail "the resolver must guard the requested text against stale callbacks"
+for host in '"maps.app.goo.gl"' '"google.com"' '"www.google.com"' '"maps.google.com"' '"maps.apple.com"'; do
+    grep -q -F "$host" "$SOURCE_DIR/GPSLabMapLinkCore.c" \
+        || fail "missing exact allowlisted host: $host"
+done
+# Strict HTTPS-only ephemeral session; no cookies/cache/credentials; bounded.
+grep -q -F "ephemeralSessionConfiguration" "$TRANSPORT" \
+    || fail "transport must use an isolated ephemeral session"
+grep -q -F "HTTPShouldSetCookies = NO" "$TRANSPORT" \
+    || fail "transport must disable cookies"
+grep -q -F "URLCache = nil" "$TRANSPORT" \
+    || fail "transport must disable the URL cache"
+grep -q -F "URLCredentialStorage = nil" "$TRANSPORT" \
+    || fail "transport must disable credential storage"
+grep -q -F "HTTPAdditionalHeaders = nil" "$TRANSPORT" \
+    || fail "transport must not add custom headers"
+# Every redirect is validated BEFORE it is followed and rebuilt as a clean GET.
+grep -q -F "willPerformHTTPRedirection" "$TRANSPORT" \
+    || fail "transport must intercept redirects"
+grep -q -F "completionHandler(nil)" "$TRANSPORT" \
+    || fail "transport must reject an untrusted redirect instead of following it"
+grep -q -F "shouldFollowRedirectToURLString" "$TRANSPORT" \
+    || fail "transport must expose the redirect trust decision"
+grep -q -F "sanitizedRedirectRequestForTarget" "$TRANSPORT" \
+    || fail "transport must rebuild a clean GET for each redirect"
+grep -q -F 'HTTPMethod = @"GET"' "$TRANSPORT" \
+    || fail "transport must issue GET requests"
+grep -q -F "dispositionForAuthenticationMethod" "$TRANSPORT" \
+    || fail "transport must handle challenges explicitly"
+grep -q -F "didReceiveChallenge" "$TRANSPORT" \
+    || fail "transport must implement challenge handlers"
+grep -q -F "HTTP Basic/Digest/NTLM" "$TRANSPORT" \
+    || fail "transport must implement the TASK-level challenge handler (HTTP auth)"
+grep -q -F "NSURLAuthenticationMethodServerTrust" "$TRANSPORT" \
+    || fail "transport must default-handle only server trust"
+grep -q -F "NSURLSessionAuthChallengeCancelAuthenticationChallenge" "$TRANSPORT" \
+    || fail "transport must cancel non-server-trust challenges"
+grep -q -F "NSURLSessionResponseCancel" "$TRANSPORT" \
+    || fail "transport must cancel on response headers (never read the body)"
+grep -q -F "GPSLAB_MAP_LINK_MAX_REDIRECTS" "$TRANSPORT" \
+    || fail "transport must bound the redirect count"
+grep -q -F "GPSLabMapLinkTransportErrorUntrustedRedirect" "$TRANSPORT" \
+    || fail "an untrusted redirect must finish deterministically (not via later callbacks)"
+grep -q -F "delegateQueue" "$TRANSPORT" \
+    || fail "transport must serialize delegate state on a single queue"
+pass "service reuses the engine path; isolated per-request strict-HTTPS map-link transport"
+
+# Altitude: tappable box + reference-styled sheet editor (NOT UIAlertController).
+grep -q -F "altitudeTapped" "$OVERLAY" || fail "altitude box must open the editor"
+grep -q -F '@selector(altitudeTapped)' "$OVERLAY" || fail "altitude box must be tappable"
+grep -q -F "GPSLabAltitudeViewController" "$OVERLAY" \
+    || fail "the altitude editor must use the styled sheet controller"
+grep -q -F "presentSheetRoot:editor" "$OVERLAY" \
+    || fail "the altitude editor must be presented through the sheet coordinator"
+grep -q -F 'altitude.zero' "$ALTVC" || fail "altitude editor must have a zero action"
+grep -q -F 'altitude.apply' "$ALTVC" || fail "altitude editor must have an apply action"
+grep -q -F "altitude.error.range" "$ALTVC" || fail "altitude must validate the supported range explicitly"
+grep -q -F "forceLeftToRight:self.valueField" "$ALTVC" \
+    || fail "the altitude numeric field must be explicitly LTR"
+grep -q -F "GPSLabProfileAltitudeValid" "$ALTVC" \
+    || fail "the altitude editor must reuse the shared range policy"
+grep -q -F "altitudeStringForValue" "$OVERLAY" || fail "altitude display must not truncate fractions"
+pass "altitude editor is a reference-styled sheet with validation and LTR input"
+
+# Master-switch intent ownership: stale completions never roll back newer state.
+grep -q -F "masterIntentGuard" "$OVERLAY" \
+    || fail "the overlay must use the master-intent guard"
+grep -q -F "invalidateIntents" "$OVERLAY" \
+    || fail "a manual switch change must invalidate pending applies"
+grep -q -F "GPSLabMasterIntentResolutionIgnoreStale" "$OVERLAY" \
+    || fail "a superseded/cancelled apply completion must be ignored"
+grep -q -F "beginIntent" "$OVERLAY" || fail "a profile apply must claim the switch intent"
+pass "master-switch intents are guarded; stale completions cannot roll back newer state"
+
+# Search transitions must cancel the resolver and the place search.
+grep -q -F "[[GPSLabMapLinkResolver sharedResolver] cancel]" "$OVERLAY" \
+    || fail "input transitions/lifecycle must cancel the map-link resolver"
+grep -q -F "cancelActiveSearch]" "$OVERLAY" \
+    || fail "switching to maps mode must cancel the active place search"
+
+# Profiles: optional, backward-compatible enabled preference (never coordinator/scheduler).
+grep -q -F 'kGPSLabProfileKeyEnabled = @"enabled"' "$SOURCE_DIR/GPSLabProfile.m" \
+    || fail "profile model must define the optional enabled key"
+grep -q -F "profileWithEnabledPreference:" "$SOURCE_DIR/GPSLabProfile.m" \
+    || fail "profile model must support an explicit enabled preference"
+grep -q -F "if (self.hasEnabledPreference)" "$SOURCE_DIR/GPSLabProfile.m" \
+    || fail "enabled must only be persisted when explicitly present (backward compatible)"
+grep -q -F "if (dictionary[kGPSLabProfileKeyEnabled] != nil)" "$SOURCE_DIR/GPSLabProfile.m" \
+    || fail "absent enabled must keep legacy semantics"
+grep -q -F "profile.hasEnabledPreference" "$OVERLAY" \
+    || fail "the UI adapter must only restore an explicitly saved switch state"
+grep -q -F "stageProfile:" "$OVERLAY" \
+    || fail "a disabled profile must be staged while the engine stays off"
+grep -q -F "applyStagedProfileUI" "$OVERLAY" \
+    || fail "a staged disabled profile must restore its saved route/config UI"
+grep -q -F "wasEnabled" "$OVERLAY" \
+    || fail "the switch change must be rolled back when an apply fails"
+grep -q -F "isValidForApplication" "$OVERLAY" \
+    || fail "the UI adapter must preflight before touching the switch"
+grep -q -F "if (!editing)" "$OVERLAY" \
+    || fail "saving an edit must not overwrite the existing enabled preference"
+grep -q -F "profileWithEnabledPreference:" "$OVERLAY" \
+    || fail "a new profile must capture the live switch state"
+grep -q -F "stageProfile:" "$SOURCE_DIR/GPSLabProfileApplicationCoordinator.m" \
+    || fail "the coordinator must expose the optional staging adapter"
+grep -q -F "profileWithEnabledPreference:" "$SOURCE_DIR/GPSLabProfileFormViewController.m" \
+    || fail "the profile form must preserve the optional enabled field on edit"
+if grep -q -F "setEnabledAndNotify" "$SOURCE_DIR/GPSLabProfileApplicationCoordinator.m"; then
+    fail "the coordinator must still never toggle the engine"
+fi
+if grep -q -F "setEnabledAndNotify:YES" "$SOURCE_DIR/GPSLabScheduler.m" "$SOURCE_DIR/GPSLabSchedulerDefaultHost.m" >/dev/null 2>&1; then
+    fail "the scheduler must still never enable the engine"
+fi
+pass "profiles carry an optional enabled state; coordinator/scheduler gating unchanged"
+
+for testfile in tests/gpslab_map_link_test.c tests/GPSLabMapLinkResolverTests.m tests/gpslab_altitude_test.c tests/GPSLabEngineTests.m tests/GPSLabMasterIntentGuardTests.m; do
+    [[ -f "$ROOT/$testfile" ]] || fail "test missing: $testfile"
+done
+pass "map-link core, resolver, altitude, engine and master-intent tests are present"
 
 # ------------------------------------------------- Profiles / modules ---------
 echo "== Profiles / modules / schedule =="
