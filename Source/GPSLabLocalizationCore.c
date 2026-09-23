@@ -136,9 +136,9 @@ const GPSLabLocalizationEntry kGPSLabLocalizationTable[] = {
     // Fluctuation
     { "fluctuation.title", "\u062a\u063a\u064a\u0651\u0631 \u0627\u0644\u0645\u0648\u0642\u0639", "Location fluctuation" },
     { "fluctuation.boundedWalk", "\u062d\u0631\u0643\u0629 \u0639\u0634\u0648\u0627\u0626\u064a\u0629 \u0645\u062d\u062f\u0648\u062f\u0629", "Bounded random walk" },
-    { "fluctuation.section", "\u0627\u0644\u062a\u063a\u064a\u0651\u0631", "Fluctuation" },
+    { "fluctuation.section", "\u0627\u0644\u062a\u0630\u0628\u0630\u0628", "Fluctuation" },
     { "fluctuation.radiusFormat", "%.0f \u0645", "%.0f m" },
-    { "fluctuation.radius", "\u0646\u0637\u0627\u0642 \u0627\u0644\u062a\u063a\u064a\u0651\u0631 (\u0645\u062a\u0631)", "Radius (meters)" },
+    { "fluctuation.radius", "\u0646\u0637\u0627\u0642 \u0627\u0644\u062a\u0630\u0628\u0630\u0628 (\u0645\u062a\u0631)", "Radius (meters)" },
 
     // Search
     { "search.empty", "\u0644\u0627 \u062a\u0648\u062c\u062f \u0646\u062a\u0627\u0626\u062c", "No results" },

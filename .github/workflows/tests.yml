@@ -230,6 +230,22 @@ jobs:
             -o /tmp/gpslab-engine-tests
           /tmp/gpslab-engine-tests
 
+  drift-tests:
+    name: Bounded drift model (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run drift tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -framework CoreLocation -ISource \
+            tests/GPSLabDriftTests.m Source/GPSLabDriftModel.m Source/GPSLabGeodesy.m \
+            Source/GPSLabTypes.m -o /tmp/gpslab-drift-tests
+          /tmp/gpslab-drift-tests
+
   master-intent-guard-tests:
     name: Master-switch intent guard (macOS)
     runs-on: macos-latest
@@ -289,7 +305,7 @@ jobs:
           set -euo pipefail
           clang -fobjc-arc -fmodules -framework Foundation -framework CoreLocation -ISource \
             tests/GPSLabProfileTests.m Source/GPSLabProfile.m Source/GPSLabProfileStore.m \
-            Source/GPSLabProfileCore.c -o /tmp/gpslab-profile-tests
+            Source/GPSLabTypes.m Source/GPSLabProfileCore.c -o /tmp/gpslab-profile-tests
           /tmp/gpslab-profile-tests
 
   profile-application-tests:
@@ -305,7 +321,7 @@ jobs:
           set -euo pipefail
           clang -fobjc-arc -fmodules -framework Foundation -framework CoreLocation -ISource \
             tests/GPSLabProfileApplicationTests.m Source/GPSLabProfileApplicationCoordinator.m \
-            Source/GPSLabProfile.m Source/GPSLabProfileCore.c Source/GPSLabSimulationRegistry.m \
+            Source/GPSLabProfile.m Source/GPSLabTypes.m Source/GPSLabProfileCore.c Source/GPSLabSimulationRegistry.m \
             Source/GPSLabSimulationModule.m Source/GPSLabWiFiSimulationModule.m \
             Source/GPSLabBluetoothSimulationModule.m -o /tmp/gpslab-application-tests
           /tmp/gpslab-application-tests
@@ -324,7 +340,7 @@ jobs:
           clang -fobjc-arc -fmodules -framework Foundation -framework CoreLocation -ISource \
             tests/GPSLabSimulationModuleTests.m Source/GPSLabSimulationModule.m \
             Source/GPSLabWiFiSimulationModule.m Source/GPSLabBluetoothSimulationModule.m \
-            Source/GPSLabSimulationRegistry.m Source/GPSLabProfile.m Source/GPSLabProfileCore.c \
+            Source/GPSLabSimulationRegistry.m Source/GPSLabProfile.m Source/GPSLabTypes.m Source/GPSLabProfileCore.c \
             -o /tmp/gpslab-simulation-tests
           /tmp/gpslab-simulation-tests
 
@@ -356,5 +372,5 @@ jobs:
           set -euo pipefail
           clang -fobjc-arc -fmodules -framework Foundation -ISource \
             tests/GPSLabSchedulerTests.m Source/GPSLabScheduler.m Source/GPSLabSchedulerCore.c \
-            Source/GPSLabProfile.m Source/GPSLabProfileCore.c -o /tmp/gpslab-scheduler-tests
+            Source/GPSLabProfile.m Source/GPSLabTypes.m Source/GPSLabProfileCore.c -o /tmp/gpslab-scheduler-tests
           /tmp/gpslab-scheduler-tests

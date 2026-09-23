@@ -141,7 +141,7 @@ static GPSLabProfile *StaticProfile(NSString *identifier, BOOL withWiFi) {
                                            altitude:612.0
                                             heading:90.0
                                        driftEnabled:YES
-                                  driftRadiusMeters:30.0
+                                  driftRadiusMeters:12.0
                                               route:nil
                                                wifi:(withWiFi ? WiFiConfig() : nil)
                                           bluetooth:nil
@@ -165,7 +165,7 @@ static GPSLabProfile *RouteProfile(NSString *identifier) {
                                            altitude:700.0
                                             heading:45.0
                                        driftEnabled:NO
-                                  driftRadiusMeters:30.0
+                                  driftRadiusMeters:12.0
                                               route:route
                                                wifi:nil
                                           bluetooth:nil
@@ -224,7 +224,7 @@ static void test_strict_preflight_rejects_malformed(void) {
                                                                 altitude:0.0
                                                                  heading:-1.0
                                                             driftEnabled:NO
-                                                       driftRadiusMeters:30.0
+                                                        driftRadiusMeters:12.0
                                                                    route:nil
                                                                     wifi:nil
                                                                bluetooth:nil
@@ -246,7 +246,7 @@ static void test_static_apply_applies_alt_heading_drift(void) {
     CHECK([backend.calls containsObject:@"setDrift"], @"drift applied");
     CHECK(fabs(backend.lastAltitude - 612.0) < 1e-9, @"altitude applied");
     CHECK(fabs(backend.lastHeading - 90.0) < 1e-9, @"heading applied");
-    CHECK(backend.lastDriftEnabled && fabs(backend.lastDriftRadius - 30.0) < 1e-9, @"drift forwarded");
+    CHECK(backend.lastDriftEnabled && fabs(backend.lastDriftRadius - 12.0) < 1e-9, @"drift forwarded");
     CHECK([coordinator.appliedProfileIdentifier isEqualToString:@"s2"], @"ownership recorded");
 }
 
@@ -366,7 +366,7 @@ static void test_invalid_apply_does_not_disturb_prior(void) {
                                                                  altitude:0.0
                                                                   heading:-1.0
                                                              driftEnabled:NO
-                                                        driftRadiusMeters:30.0
+                                                       driftRadiusMeters:12.0
                                                                     route:nil
                                                                      wifi:nil
                                                                 bluetooth:nil
@@ -452,6 +452,64 @@ static void test_stage_stops_prior_owned_active_route(void) {
     CHECK(coordinator.appliedProfileIdentifier == nil, @"staging clears prior ownership");
 }
 
+static void test_drift_radius_boundaries_forwarded(void) {
+    FixtureBackend *backend = [[FixtureBackend alloc] init];
+    GPSLabProfileApplicationCoordinator *coordinator =
+        [[GPSLabProfileApplicationCoordinator alloc] initWithBackend:backend];
+
+    GPSLabProfile *zero = [[GPSLabProfile alloc] initWithIdentifier:@"drift-zero"
+                                                               name:@"Zero"
+                                                       locationMode:GPSLabProfileLocationStatic
+                                                          latitude:24.7136
+                                                         longitude:46.6753
+                                                          altitude:0.0
+                                                           heading:-1.0
+                                                      driftEnabled:YES
+                                                 driftRadiusMeters:0.0
+                                                             route:nil
+                                                              wifi:nil
+                                                         bluetooth:nil
+                                                          schedule:nil];
+    CHECK([zero isValidForApplication], @"a 0 m drift radius is a valid profile");
+    GPSLabProfileApplicationResult *zeroResult = ApplySync(coordinator, zero);
+    CHECK(zeroResult.applied, @"a 0 m drift profile applies");
+    CHECK(backend.lastDriftEnabled && fabs(backend.lastDriftRadius) < 1e-9,
+          @"the 0 m (exact base) radius is forwarded");
+
+    GPSLabProfile *max = [[GPSLabProfile alloc] initWithIdentifier:@"drift-max"
+                                                              name:@"Max"
+                                                      locationMode:GPSLabProfileLocationStatic
+                                                         latitude:24.7136
+                                                        longitude:46.6753
+                                                         altitude:0.0
+                                                          heading:-1.0
+                                                     driftEnabled:YES
+                                                driftRadiusMeters:20.0
+                                                            route:nil
+                                                             wifi:nil
+                                                        bluetooth:nil
+                                                         schedule:nil];
+    CHECK([max isValidForApplication], @"a 20 m drift radius is a valid profile");
+    GPSLabProfileApplicationResult *maxResult = ApplySync(coordinator, max);
+    CHECK(maxResult.applied, @"a 20 m drift profile applies");
+    CHECK(fabs(backend.lastDriftRadius - 20.0) < 1e-9, @"the 20 m radius is forwarded");
+
+    GPSLabProfile *tooBig = [[GPSLabProfile alloc] initWithIdentifier:@"drift-big"
+                                                                 name:@"Big"
+                                                         locationMode:GPSLabProfileLocationStatic
+                                                            latitude:24.7136
+                                                           longitude:46.6753
+                                                            altitude:0.0
+                                                             heading:-1.0
+                                                        driftEnabled:YES
+                                                   driftRadiusMeters:20.5
+                                                               route:nil
+                                                                wifi:nil
+                                                           bluetooth:nil
+                                                            schedule:nil];
+    CHECK(![tooBig isValidForApplication], @"a radius above 20 m fails preflight");
+}
+
 int main(void) {
     @autoreleasepool {
         test_lock_and_enable_gating();
@@ -466,6 +524,7 @@ int main(void) {
         test_valid_replacement_stops_prior_pending_route();
         test_stage_profile_while_engine_off();
         test_stage_stops_prior_owned_active_route();
+        test_drift_radius_boundaries_forwarded();
     }
 
     if (gFailures == 0) {

@@ -32,6 +32,8 @@ static int gChecks = 0;
         }                                                          \
     } while (0)
 
+static NSURL *MakeTemporaryDirectory(void);
+
 static NSDictionary *ValidProfileDictionary(NSString *identifier, NSString *name) {
     return @{
         @"id": identifier,
@@ -42,7 +44,7 @@ static NSDictionary *ValidProfileDictionary(NSString *identifier, NSString *name
         @"altitude": @(612.0),
         @"heading": @(-1.0),
         @"driftEnabled": @YES,
-        @"driftRadiusMeters": @(30.0),
+        @"driftRadiusMeters": @(12.0),
     };
 }
 
@@ -134,8 +136,9 @@ static void test_model_rejection(void) {
     CHECK([GPSLabProfile profileFromDictionary:dict] == nil, @"empty name rejected");
 
     dict = [ValidProfileDictionary(@"id", @"X") mutableCopy];
-    dict[@"driftRadiusMeters"] = @(0.5);
-    CHECK([GPSLabProfile profileFromDictionary:dict] == nil, @"out-of-range drift radius rejected");
+    dict[@"driftRadiusMeters"] = @(500.5);
+    CHECK([GPSLabProfile profileFromDictionary:dict] == nil,
+          @"radius outside both the new and historical schemas rejected");
 
     // Route mode without a route block is rejected.
     dict = [ValidProfileDictionary(@"id", @"X") mutableCopy];
@@ -153,6 +156,106 @@ static void test_model_rejection(void) {
     CHECK([GPSLabProfile profileFromDictionary:dict] == nil, @"invalid schedule rejected");
 
     CHECK([GPSLabProfile profileFromDictionary:(NSDictionary *)@[]] == nil, @"non-dictionary rejected");
+}
+
+static void test_drift_radius_policy(void) {
+    // Backward compatibility: a legacy profile without the radius key defaults to 5 m.
+    NSMutableDictionary *legacy = [ValidProfileDictionary(@"legacy-drift", @"Legacy") mutableCopy];
+    [legacy removeObjectForKey:@"driftRadiusMeters"];
+    GPSLabProfile *defaulted = [GPSLabProfile profileFromDictionary:legacy];
+    CHECK(defaulted != nil, @"missing drift radius still parses (backward compatible)");
+    CHECK(defaulted != nil && fabs(defaulted.driftRadiusMeters - 5.0) < 1e-9,
+          @"missing drift radius defaults to 5 m");
+
+    // The full 0..20 range is accepted and preserved; 0 means the exact base.
+    BOOL allInRange = YES;
+    for (double radius = 0.0; radius <= 20.0; radius += 0.5) {
+        NSMutableDictionary *dict = [ValidProfileDictionary(@"range", @"Range") mutableCopy];
+        dict[@"driftRadiusMeters"] = @(radius);
+        GPSLabProfile *profile = [GPSLabProfile profileFromDictionary:dict];
+        if (profile == nil || fabs(profile.driftRadiusMeters - radius) > 1e-9) {
+            allInRange = NO;
+        }
+    }
+    CHECK(allInRange, @"every drift radius in [0, 20] is accepted and preserved");
+
+    // A present-but-non-finite or non-number radius is still rejected.
+    NSMutableDictionary *nan = [ValidProfileDictionary(@"nan", @"NaN") mutableCopy];
+    nan[@"driftRadiusMeters"] = @(NAN);
+    CHECK([GPSLabProfile profileFromDictionary:nan] == nil, @"non-finite drift radius rejected");
+    NSMutableDictionary *text = [ValidProfileDictionary(@"text", @"Text") mutableCopy];
+    text[@"driftRadiusMeters"] = @"30";
+    CHECK([GPSLabProfile profileFromDictionary:text] == nil, @"non-number drift radius rejected");
+
+    // Anything outside the union of the two schemas stays rejected.
+    for (NSNumber *bad in @[ @(-0.5), @(500.5), @(600.0), @(1e100) ]) {
+        NSMutableDictionary *dict = [ValidProfileDictionary(@"bad", @"Bad") mutableCopy];
+        dict[@"driftRadiusMeters"] = bad;
+        CHECK([GPSLabProfile profileFromDictionary:dict] == nil,
+              @"radius outside [0, 500] is rejected");
+    }
+
+    // Legacy schema values (up to the old 500 m) must LOAD and CLAMP to [0, 20],
+    // not drop the profile.
+    NSDictionary<NSNumber *, NSNumber *> *legacyClamps = @{
+        @(0.0): @(0.0),      // new-schema exact base, preserved
+        @(1.0): @(1.0),      // historical minimum, preserved
+        @(12.0): @(12.0),    // in both schemas, preserved
+        @(20.0): @(20.0),    // new maximum, preserved
+        @(20.5): @(20.0),    // historical-valid, clamped to the new maximum
+        @(30.0): @(20.0),    // the reviewer's regression case
+        @(100.0): @(20.0),
+        @(500.0): @(20.0),   // historical maximum, clamped
+    };
+    for (NSNumber *input in legacyClamps) {
+        NSMutableDictionary *dict = [ValidProfileDictionary(@"legacy-range", @"Legacy") mutableCopy];
+        dict[@"driftRadiusMeters"] = input;
+        GPSLabProfile *profile = [GPSLabProfile profileFromDictionary:dict];
+        CHECK(profile != nil, @"legacy drift radius loads instead of dropping the profile");
+        CHECK(profile != nil && fabs(profile.driftRadiusMeters - legacyClamps[input].doubleValue) < 1e-9,
+              @"legacy drift radius clamps into the current policy");
+    }
+
+    // A parsed legacy profile is valid under the NEW schema, so it round-trips.
+    NSMutableDictionary *legacy30Dictionary = [ValidProfileDictionary(@"legacy-30", @"Legacy 30") mutableCopy];
+    legacy30Dictionary[@"driftRadiusMeters"] = @(30.0);
+    GPSLabProfile *legacy30 = [GPSLabProfile profileFromDictionary:legacy30Dictionary];
+    CHECK(legacy30 != nil && [legacy30 isValidForApplication],
+          @"a migrated legacy radius is valid for application");
+    GPSLabProfile *roundTrip = legacy30 != nil
+        ? [GPSLabProfile profileFromDictionary:legacy30.dictionaryRepresentation] : nil;
+    CHECK(roundTrip != nil && fabs(roundTrip.driftRadiusMeters - 20.0) < 1e-9,
+          @"migrated legacy radius round-trips as 20 m");
+}
+
+static void test_legacy_drift_radius_loads_via_store(void) {
+    NSURL *directory = MakeTemporaryDirectory();
+    GPSLabProfileStore *store = [[GPSLabProfileStore alloc] initWithDirectoryURL:directory];
+
+    // Simulate an on-disk file written by the previous schema (radius 30 m).
+    NSMutableDictionary *legacy = [ValidProfileDictionary(@"legacy-store", @"Legacy store") mutableCopy];
+    legacy[@"driftRadiusMeters"] = @(30.0);
+    NSDictionary *root = @{ @"schemaVersion": @(GPSLAB_PROFILE_SCHEMA_VERSION),
+                            @"profiles": @[ legacy ] };
+    NSData *data = [NSJSONSerialization dataWithJSONObject:root options:0 error:NULL];
+    [data writeToURL:store.fileURL options:NSDataWritingAtomic error:NULL];
+
+    NSArray<GPSLabProfile *> *profiles = store.loadProfiles;
+    CHECK(profiles.count == 1, @"legacy profile is kept by the store, not dropped");
+    CHECK(profiles.count == 1 && fabs(profiles.firstObject.driftRadiusMeters - 20.0) < 1e-9,
+          @"store load clamps the legacy 30 m radius to 20 m");
+
+    // The migrated profile can be persisted again (now valid under the new schema),
+    // and it survives the rewrite rather than being deleted.
+    NSError *error = nil;
+    CHECK(profiles.count == 1 && [store updateProfile:profiles.firstObject error:&error],
+          @"migrated legacy profile can be written back");
+    NSArray<GPSLabProfile *> *reloaded = store.loadProfiles;
+    CHECK(reloaded.count == 1, @"migrated legacy profile still present after rewrite");
+    CHECK(reloaded.count == 1 && fabs(reloaded.firstObject.driftRadiusMeters - 20.0) < 1e-9,
+          @"rewritten legacy profile keeps the clamped radius");
+
+    [[NSFileManager defaultManager] removeItemAtURL:directory error:NULL];
 }
 
 static void test_enabled_preference(void) {
@@ -402,7 +505,7 @@ static void test_atomic_failure_preserves_old_record(void) {
                                                           altitude:0.0
                                                            heading:-1.0
                                                       driftEnabled:NO
-                                                 driftRadiusMeters:30.0
+                                                 driftRadiusMeters:12.0
                                                              route:nil
                                                               wifi:nil
                                                          bluetooth:nil
@@ -445,7 +548,7 @@ static void test_is_valid_for_application(void) {
                                                               altitude:0.0
                                                                heading:-1.0
                                                           driftEnabled:NO
-                                                     driftRadiusMeters:30.0
+                                                     driftRadiusMeters:12.0
                                                                  route:nil
                                                                   wifi:nil
                                                              bluetooth:nil
@@ -487,11 +590,11 @@ static void test_is_valid_for_application(void) {
                                                                           altitude:612.0
                                                                            heading:-1.0
                                                                       driftEnabled:NO
-                                                                 driftRadiusMeters:30.0
-                                                                             route:route
-                                                                              wifi:nil
-                                                                         bluetooth:nil
-                                                                          schedule:nil];
+                                                                 driftRadiusMeters:12.0
+                                                                         route:route
+                                                                          wifi:nil
+                                                                     bluetooth:nil
+                                                                      schedule:nil];
     CHECK(![typedStaticWithRoute isValidForApplication],
           @"typed static profile carrying a route fails preflight");
 }
@@ -500,6 +603,8 @@ int main(void) {
     @autoreleasepool {
         test_model_parsing();
         test_model_rejection();
+        test_drift_radius_policy();
+        test_legacy_drift_radius_loads_via_store();
         test_enabled_preference();
         test_attachment_clearing();
         test_store_roundtrip();

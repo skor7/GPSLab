@@ -734,6 +734,66 @@ for testfile in tests/gpslab_selection_policy_test.c tests/gpslab_selection_wiri
 done
 pass "pending draft persists separately; favorite policy is shared, visible and duplicate-aware"
 
+# ------------------------------------------------------------ Drift policy ----
+echo "== Bounded drift policy =="
+TYPES_M="$SOURCE_DIR/GPSLabTypes.m"
+DRIFT_M="$SOURCE_DIR/GPSLabDriftModel.m"
+ENGINE_M="$SOURCE_DIR/GPSLabEngine.m"
+CONFIG_M="$SOURCE_DIR/GPSLabConfiguration.m"
+PROFILE_M="$SOURCE_DIR/GPSLabProfile.m"
+FORM_M="$SOURCE_DIR/GPSLabProfileFormViewController.m"
+[[ -f "$DRIFT_M" ]] || fail "GPSLabDriftModel.m missing"
+
+grep -q -F "double GPSLabMaxDriftRadiusMeters(void) {" "$TYPES_M" \
+    || fail "drift maximum accessor missing"
+grep -A2 -F "double GPSLabMaxDriftRadiusMeters(void) {" "$TYPES_M" | grep -q -F "return 20.0;" \
+    || fail "drift maximum must be 20 m"
+grep -q -F "double GPSLabDefaultDriftRadiusMeters(void) {" "$TYPES_M" \
+    || fail "drift default accessor missing"
+grep -A2 -F "double GPSLabDefaultDriftRadiusMeters(void) {" "$TYPES_M" | grep -q -F "return 5.0;" \
+    || fail "drift default must be 5 m"
+
+# Every clamp site must share the single policy helper.
+for unit in "$CONFIG_M" "$ENGINE_M" "$DRIFT_M"; do
+    grep -q -F "GPSLabClampDriftRadiusMeters" "$unit" \
+        || fail "drift radius must clamp through the shared policy helper"
+done
+
+# The old 1..500 m clamp must be gone everywhere.
+if grep -r -n -F "driftRadiusMeters, 1.0, 500.0" "$SOURCE_DIR" >/dev/null 2>&1; then
+    fail "legacy configuration drift clamp 1..500 still present"
+fi
+if grep -r -n -F "radius, 1.0, 500.0" "$SOURCE_DIR" >/dev/null 2>&1; then
+    fail "legacy engine/model drift clamp 1..500 still present"
+fi
+if grep -r -n -F "radius >= 1.0 && radius <= 500.0" "$SOURCE_DIR" >/dev/null 2>&1; then
+    fail "legacy profile/form drift clamp 1..500 still present"
+fi
+
+# The walk must be deterministic/injectable and the engine must expose the seam.
+grep -q -F "initWithRandomUnitProvider" "$DRIFT_M" \
+    || fail "drift model must accept an injectable RNG"
+grep -q -F "setDriftRandomUnitProvider" "$ENGINE_M" \
+    || fail "engine must expose a deterministic drift RNG seam"
+
+# Backward compatibility: a profile without a drift radius key must default, not reject.
+grep -q -F 'dictionary[kGPSLabProfileKeyDriftRadius] != nil' "$PROFILE_M" \
+    || fail "profile parser must default the drift radius when the key is absent"
+grep -q -F "GPSLabClampDriftRadiusMeters" "$FORM_M" \
+    || fail "profile form must validate the drift radius through the shared policy"
+# A historically-valid radius must migrate by clamping, never drop the profile.
+grep -q -F "GPSLabDriftRadiusHistoricallyLoadable" "$PROFILE_M" \
+    || fail "profile parser must load historically-valid drift radii"
+grep -q -F "driftRadius = GPSLabClampDriftRadiusMeters(driftRadius);" "$PROFILE_M" \
+    || fail "profile parser must clamp migrated drift radii into the current policy"
+# Changing the radius through applyConfiguration must reset the walk (no jump).
+grep -q -F "radiusChanged" "$ENGINE_M" \
+    || fail "engine must reset the drift walk when the configured radius changes"
+
+[[ -f "$ROOT/tests/GPSLabDriftTests.m" ]] \
+    || fail "drift tests missing: tests/GPSLabDriftTests.m"
+pass "drift range/default/clamp/RNG/back-compat invariants present"
+
 # ------------------------------------------------------ Dead code / coverage --
 echo "== Dead code and Makefile coverage =="
 if grep -r -n -F "GPSLabPassthroughView" "$SOURCE_DIR" >/dev/null 2>&1; then

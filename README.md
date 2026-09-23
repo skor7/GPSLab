@@ -101,8 +101,10 @@ Diagnostics                os_log only; allowed events; never logs coordinates
   altitude/heading persisted and restored at next launch. Turning it off erases the
   stored coordinate keys and resets the anchor to safe defaults; the rest of the
   allow-list (bookmarks, recents, route prefs, drift, enabled) is unaffected.
-- **Drift.** A bounded correlated random walk around the anchor. The generated point
-  never exceeds the configured radius (default 8 m, geodesically clamped twice).
+- **Drift.** A bounded correlated random walk around the selected BASE coordinate.
+  The generated point never exceeds the configured radius, which ranges from 0 m
+  (the exact base) to 20 m and defaults to 5 m. The radius is enforced against the
+  base center (tangent-plane clamp plus a geodesic clamp) with no accumulation.
 - **Route simulation.** Driving/Walking use `MKDirections`; Cycling is approximated
   with the walking pedestrian network because the public `MKDirectionsTransportType`
   has no cycling constant, while still using the configured cycling speed

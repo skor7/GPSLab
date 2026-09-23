@@ -2,13 +2,16 @@
 //  GPSLabFluctuationViewController.m
 //  GPSLab
 //
-//  Drift controls. Reporting is via `changeHandler`; the canvas applies it through
-//  GPSLabEngine so clamping/persistence stay in one place.
+//  Compact Arabic drift control: a التذبذب label, a 0..20 m radius slider with a
+//  live "<n> م" readout, and the bounded-walk toggle. Reporting is via
+//  `changeHandler`; the canvas applies it through GPSLabEngine so clamping and
+//  persistence stay in one place. Editing the slider NEVER enables the engine.
 //
 
 #import "GPSLabFluctuationViewController.h"
 
 #import "GPSLabLocalization.h"
+#import "GPSLabTypes.h"
 
 @interface GPSLabFluctuationViewController ()
 @property (nonatomic, strong) UISwitch *enabledSwitch;
@@ -16,6 +19,7 @@
 @property (nonatomic, strong) UILabel *radiusValueLabel;
 @property (nonatomic, strong) UILabel *sectionHeader;
 @property (nonatomic, strong) UILabel *enabledLabel;
+@property (nonatomic, strong) UIStackView *sliderRow;
 @end
 
 @implementation GPSLabFluctuationViewController
@@ -38,9 +42,12 @@
     enabledRow.spacing = 8.0;
 
     self.radiusSlider = [[UISlider alloc] initWithFrame:CGRectZero];
-    self.radiusSlider.minimumValue = 1.0;
-    self.radiusSlider.maximumValue = 100.0;
-    self.radiusSlider.value = (float)self.radiusMeters;
+    self.radiusSlider.minimumValue = (float)GPSLabMinDriftRadiusMeters();
+    self.radiusSlider.maximumValue = (float)GPSLabMaxDriftRadiusMeters();
+    // Preserve (and clamp) the current value; a legacy larger radius shows as the bound.
+    self.radiusSlider.value = (float)GPSLabClampDriftRadiusMeters(self.radiusMeters);
+    self.radiusSlider.continuous = YES;
+    self.radiusSlider.accessibilityLabel = GPSLabLocalized(@"fluctuation.radius");
     [self.radiusSlider addTarget:self
                           action:@selector(radiusChanged)
                 forControlEvents:UIControlEventValueChanged];
@@ -49,20 +56,21 @@
     self.radiusValueLabel.textAlignment = NSTextAlignmentRight;
     [GPSLabLocalization forceLeftToRight:self.radiusValueLabel];
 
-    UIStackView *sliderRow = [[UIStackView alloc] initWithArrangedSubviews:@[self.radiusSlider,
-                                                                             self.radiusValueLabel]];
-    sliderRow.axis = UILayoutConstraintAxisHorizontal;
-    sliderRow.alignment = UIStackViewAlignmentCenter;
-    sliderRow.spacing = 8.0;
+    self.sliderRow = [[UIStackView alloc] initWithArrangedSubviews:@[self.radiusSlider,
+                                                                    self.radiusValueLabel]];
+    self.sliderRow.axis = UILayoutConstraintAxisHorizontal;
+    self.sliderRow.alignment = UIStackViewAlignmentCenter;
+    self.sliderRow.spacing = 8.0;
 
     self.sectionHeader = [self sectionHeaderLabel:@""];
 
     UIStackView *content = self.contentStack;
     [content addArrangedSubview:self.sectionHeader];
     [content addArrangedSubview:enabledRow];
-    [content addArrangedSubview:sliderRow];
+    [content addArrangedSubview:self.sliderRow];
 
     [self gpslab_applyLocalization];
+    [self updateEnabledAppearance];
 }
 
 #pragma mark - Localization
@@ -82,9 +90,20 @@
     self.radiusValueLabel.text = [NSString stringWithFormat:format, (double)self.radiusSlider.value];
 }
 
+// The radius control is only meaningful while drift is on; dim it and stop it
+// receiving touches when drift is off, but keep its value so nothing is lost.
+- (void)updateEnabledAppearance {
+    BOOL enabled = self.enabledSwitch.on;
+    self.sliderRow.alpha = enabled ? 1.0 : 0.4;
+    self.sliderRow.userInteractionEnabled = enabled;
+    self.radiusSlider.enabled = enabled;
+    self.radiusValueLabel.alpha = enabled ? 1.0 : 0.4;
+}
+
 #pragma mark - Actions
 
 - (void)toggleChanged {
+    [self updateEnabledAppearance];
     [self notifyChange];
 }
 
@@ -95,6 +114,8 @@
 
 - (void)notifyChange {
     if (self.changeHandler != nil) {
+        // The slider only edits the radius: it forwards the toggle's current state,
+        // so moving the slider must never enable the engine by itself.
         self.changeHandler(self.enabledSwitch.on, (double)self.radiusSlider.value);
     }
 }

@@ -87,6 +87,14 @@ FOUNDATION_EXPORT NSNotificationName const GPSLabLocationDidUpdateNotification;
 - (double)driftRadiusMeters;
 - (void)setDriftRadiusMeters:(double)radius;
 
+#pragma mark - Testing seams
+
+/**
+ * Injects a deterministic random source into the bounded drift walk so engine
+ * tests are reproducible. Passing nil restores the production arc4random source.
+ */
+- (void)setDriftRandomUnitProvider:(nullable double (^)(void))provider;
+
 #pragma mark - Route simulation
 
 - (GPSLabRouteSimulator *)routeSimulator;

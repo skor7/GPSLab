@@ -29,7 +29,10 @@ NS_ASSUME_NONNULL_BEGIN
 /** Whether the bounded random walk is applied around the anchor. */
 @property (nonatomic, assign) BOOL driftEnabled;
 
-/** Walking radius in meters; clamped to a safe range. */
+/**
+ * Maximum displacement from the selected BASE coordinate, in meters. Clamped to
+ * [0, 20]; 0 means the exact base coordinate. Defaults to 5.
+ */
 @property (nonatomic, assign) double driftRadiusMeters;
 
 /** When YES the last synthetic coordinate is persisted so the next launch resumes there. */

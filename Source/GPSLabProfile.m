@@ -124,7 +124,24 @@ static NSString * _Nullable GPSLabReadString(NSDictionary *dictionary, NSString 
 }
 
 static BOOL GPSLabDriftRadiusValid(double radius) {
-    return (isfinite(radius) && radius >= 1.0 && radius <= 500.0) ? YES : NO;
+    return (isfinite(radius) &&
+            radius >= GPSLabMinDriftRadiusMeters() &&
+            radius <= GPSLabMaxDriftRadiusMeters()) ? YES : NO;
+}
+
+/** Upper bound accepted by the historical schema ([1, 500] m). */
+static const double kGPSLabLegacyDriftRadiusMaxMeters = 500.0;
+
+/**
+ * A persisted radius that was valid under the historical schema (up to 500 m) is
+ * migrated by clamping into the current [0, 20] policy rather than dropping the
+ * whole profile. The current schema also allows [0, 1), so the loadable window is
+ * [0, 500]; non-finite/non-number and values outside that window stay invalid.
+ */
+static BOOL GPSLabDriftRadiusHistoricallyLoadable(double radius) {
+    return (isfinite(radius) &&
+            radius >= GPSLabMinDriftRadiusMeters() &&
+            radius <= kGPSLabLegacyDriftRadiusMaxMeters) ? YES : NO;
 }
 
 #pragma mark - Route
@@ -426,22 +443,33 @@ static BOOL GPSLabDriftRadiusValid(double radius) {
         return nil;
     }
 
-    double latitude = 0.0, longitude = 0.0, altitude = 0.0, heading = -1.0, driftRadius = 30.0;
+    double latitude = 0.0, longitude = 0.0, altitude = 0.0, heading = -1.0;
+    double driftRadius = GPSLabDefaultDriftRadiusMeters();
     BOOL driftEnabled = NO;
     if (!GPSLabReadFiniteNumber(dictionary, kGPSLabProfileKeyLatitude, &latitude) ||
         !GPSLabReadFiniteNumber(dictionary, kGPSLabProfileKeyLongitude, &longitude) ||
         !GPSLabReadFiniteNumber(dictionary, kGPSLabProfileKeyAltitude, &altitude) ||
         !GPSLabReadFiniteNumber(dictionary, kGPSLabProfileKeyHeading, &heading) ||
-        !GPSLabReadFiniteNumber(dictionary, kGPSLabProfileKeyDriftRadius, &driftRadius) ||
         !GPSLabReadBool(dictionary, kGPSLabProfileKeyDriftEnabled, &driftEnabled)) {
+        return nil;
+    }
+    // Backward compatibility: a profile saved before the drift radius field existed
+    // (key omitted) defaults to the production default (5 m). A present-but-malformed
+    // value is still rejected, never silently defaulted.
+    if (dictionary[kGPSLabProfileKeyDriftRadius] != nil &&
+        !GPSLabReadFiniteNumber(dictionary, kGPSLabProfileKeyDriftRadius, &driftRadius)) {
         return nil;
     }
     if (!GPSLabProfileCoordinateValid(latitude, longitude) ||
         !GPSLabProfileAltitudeValid(altitude) ||
         !GPSLabProfileHeadingValid(heading) ||
-        !GPSLabDriftRadiusValid(driftRadius)) {
+        !GPSLabDriftRadiusHistoricallyLoadable(driftRadius)) {
         return nil;
     }
+    // Migrate a historically-valid radius into the current [0, 20] policy: a value
+    // that was valid under the old schema is clamped, never silently dropped. The
+    // stored/marshalled value is the clamped one, so the next write is new-schema.
+    driftRadius = GPSLabClampDriftRadiusMeters(driftRadius);
 
     // Route block: required for route profiles, ignored for static ones.
     id routeValue = dictionary[kGPSLabProfileKeyRoute];

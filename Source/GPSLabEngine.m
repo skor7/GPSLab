@@ -73,8 +73,13 @@ static const double kGPSLabMaxStepMeters = 1.5;
     os_unfair_lock_lock(&_lock);
     BOOL anchorMoved = (_configuration.latitude != sanitized.latitude) ||
         (_configuration.longitude != sanitized.longitude);
+    BOOL radiusChanged = (_configuration.driftRadiusMeters != sanitized.driftRadiusMeters);
     _configuration = sanitized;
-    if (anchorMoved) {
+    // Reset the walk when the anchor moves, when the radius changes (narrowing must
+    // not jump a stale wider-radius offset onto the new bound), when drift turns
+    // off, or when the radius collapses to the exact base.
+    if (anchorMoved || radiusChanged || !sanitized.driftEnabled ||
+        sanitized.driftRadiusMeters <= 0.0) {
         [_drift reset];
     }
     os_unfair_lock_unlock(&_lock);
@@ -259,10 +264,18 @@ static const double kGPSLabMaxStepMeters = 1.5;
 
 - (void)setDriftRadiusMeters:(double)radius {
     os_unfair_lock_lock(&_lock);
-    _configuration.driftRadiusMeters = GPSLabClampDouble(radius, 1.0, 500.0);
+    // Only the radius changes here; editing the radius never turns drift on. The
+    // walk is reset so a smaller bound cannot inherit an out-of-range offset.
+    _configuration.driftRadiusMeters = GPSLabClampDriftRadiusMeters(radius);
     [_drift reset];
     os_unfair_lock_unlock(&_lock);
     [self persistConfiguration];
+}
+
+- (void)setDriftRandomUnitProvider:(double (^)(void))provider {
+    os_unfair_lock_lock(&_lock);
+    _drift.randomUnitProvider = provider;
+    os_unfair_lock_unlock(&_lock);
 }
 
 - (void)setKeepLastCoordinate:(BOOL)keepLast {
@@ -404,18 +417,25 @@ static const double kGPSLabMaxStepMeters = 1.5;
     double heading = _configuration.heading;
 
     CLLocationCoordinate2D coordinate;
-    if (driftEnabled && advance) {
+    if (driftEnabled && radius > 0.0 && advance) {
         coordinate = [_drift advanceAroundAnchor:anchor radius:radius stepMeters:kGPSLabMaxStepMeters];
-    } else if (driftEnabled) {
+    } else if (driftEnabled && radius > 0.0) {
         coordinate = [_drift currentAroundAnchor:anchor];
     } else {
+        // Drift off, or an exact-base radius of 0: emit the base coordinate itself.
+        // Reset so a stale offset can never leak into a later radius change.
+        [_drift reset];
         coordinate = anchor;
     }
     os_unfair_lock_unlock(&_lock);
 
     // Belt-and-braces geodesic clamp: never emit a point farther than the radius.
-    if (driftEnabled && GPSLabDistanceMeters(anchor, coordinate) > radius) {
-        coordinate = GPSLabCoordinateFromOffset(anchor, 0.0, 0.0);
+    // Scaling onto the boundary keeps the path continuous (never snaps to base).
+    if (driftEnabled && radius > 0.0) {
+        double distance = GPSLabDistanceMeters(anchor, coordinate);
+        if (distance > radius && distance > 0.0) {
+            coordinate = GPSLabInterpolateCoordinate(anchor, coordinate, radius / distance);
+        }
     }
 
     CLLocation *location = [GPSLabLocationFactory staticLocationWithCoordinate:coordinate

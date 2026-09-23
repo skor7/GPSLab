@@ -42,8 +42,18 @@ FOUNDATION_EXPORT BOOL GPSLabIsValidLongitude(double longitude);
 /** YES when latitude/longitude together are finite and in range. */
 FOUNDATION_EXPORT BOOL GPSLabIsValidCoordinate(double latitude, double longitude);
 
-/** Default synthetic walking radius, in meters, around the anchor. */
+/**
+ * Drift radius policy, in meters. The radius is the maximum displacement from the
+ * selected BASE coordinate: 0 means "exactly the base" (no displacement), and the
+ * value is always clamped into [minimum, maximum]. Shared by the configuration,
+ * the engine, the profile schema and the UI so the bound is defined once.
+ */
+FOUNDATION_EXPORT double GPSLabMinDriftRadiusMeters(void);
+FOUNDATION_EXPORT double GPSLabMaxDriftRadiusMeters(void);
 FOUNDATION_EXPORT double GPSLabDefaultDriftRadiusMeters(void);
+
+/** Clamps a drift radius into the inclusive [min, max] policy range (NaN -> min). */
+FOUNDATION_EXPORT double GPSLabClampDriftRadiusMeters(double radius);
 
 /** Default approximate ground speed (km/h) for a route mode. */
 FOUNDATION_EXPORT double GPSLabSpeedKmhForRouteMode(GPSLabRouteMode mode, double customSpeedKmh);

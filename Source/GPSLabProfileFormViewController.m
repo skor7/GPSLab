@@ -576,11 +576,12 @@
         heading = staticHeading;
     }
 
-    double radius = self.source.driftRadiusMeters;
+    double radius = GPSLabClampDriftRadiusMeters(self.source.driftRadiusMeters);
     if (![self readOptionalNumber:self.driftRadiusField
-                         fallback:self.source.driftRadiusMeters
+                         fallback:radius
                              into:&radius] ||
-        !(radius >= 1.0 && radius <= 500.0)) {
+        radius < GPSLabMinDriftRadiusMeters() ||
+        radius > GPSLabMaxDriftRadiusMeters()) {
         [self showAlertWithTitle:GPSLabLocalized(@"profiles.newTitle")
                          message:GPSLabLocalized(@"profiles.error.name")];
         return;

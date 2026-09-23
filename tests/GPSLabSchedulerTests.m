@@ -140,7 +140,7 @@ static GPSLabProfile *ScheduledProfile(NSString *identifier,
                                            altitude:0.0
                                             heading:-1.0
                                        driftEnabled:NO
-                                  driftRadiusMeters:30.0
+                                  driftRadiusMeters:12.0
                                               route:nil
                                                wifi:nil
                                           bluetooth:nil

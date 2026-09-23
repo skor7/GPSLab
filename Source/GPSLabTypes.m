@@ -34,8 +34,20 @@ BOOL GPSLabIsValidCoordinate(double latitude, double longitude) {
     return GPSLabIsValidLatitude(latitude) && GPSLabIsValidLongitude(longitude);
 }
 
+double GPSLabMinDriftRadiusMeters(void) {
+    return 0.0;
+}
+
+double GPSLabMaxDriftRadiusMeters(void) {
+    return 20.0;
+}
+
 double GPSLabDefaultDriftRadiusMeters(void) {
-    return 8.0;
+    return 5.0;
+}
+
+double GPSLabClampDriftRadiusMeters(double radius) {
+    return GPSLabClampDouble(radius, GPSLabMinDriftRadiusMeters(), GPSLabMaxDriftRadiusMeters());
 }
 
 double GPSLabSpeedKmhForRouteMode(GPSLabRouteMode mode, double customSpeedKmh) {

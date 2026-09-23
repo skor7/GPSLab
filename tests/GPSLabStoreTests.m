@@ -548,6 +548,30 @@ static void test_reopen_keep_last_independent(void) {
     endStore();
 }
 
+static void test_drift_config_backward_compatible(void) {
+    beginStore();
+    // A fresh/absent configuration uses the production drift default.
+    GPSLabConfiguration *fresh = [gStore loadConfiguration];
+    CHECK(fabs(fresh.driftRadiusMeters - 5.0) < 1e-9, @"missing drift data defaults to 5 m");
+    CHECK(fresh.driftEnabled, @"drift defaults to enabled");
+    endStore();
+
+    // A legacy dictionary without the drift radius key parses to 5 m, still enabled.
+    NSDictionary *legacy = @{ @"enabled": @YES, @"latitude": @(24.7136), @"longitude": @(46.6753) };
+    GPSLabConfiguration *parsed = [GPSLabConfiguration configurationFromDictionary:legacy];
+    CHECK(fabs(parsed.driftRadiusMeters - 5.0) < 1e-9,
+          @"legacy config without a drift radius defaults to 5 m");
+    CHECK(parsed.driftEnabled, @"legacy config keeps drift enabled by default");
+
+    // A legacy out-of-range radius is clamped into [0, 20], never rejected.
+    NSDictionary *oversized = @{ @"driftRadiusMeters": @(999.0) };
+    CHECK(fabs([GPSLabConfiguration configurationFromDictionary:oversized].driftRadiusMeters - 20.0) < 1e-9,
+          @"legacy oversized radius clamps to 20 m");
+    NSDictionary *negative = @{ @"driftRadiusMeters": @(-3.0) };
+    CHECK(fabs([GPSLabConfiguration configurationFromDictionary:negative].driftRadiusMeters) < 1e-9,
+          @"legacy negative radius clamps to 0 m");
+}
+
 int main(void) {
     @autoreleasepool {
         test_pending_roundtrip();
@@ -565,6 +589,7 @@ int main(void) {
         test_add_rejects_invalid_altitude();
         test_concurrent_duplicate_insert();
         test_reopen_keep_last_independent();
+        test_drift_config_backward_compatible();
 
         if (gFailures != 0) {
             fprintf(stderr, "%d/%d checks failed\n", gFailures, gChecks);

@@ -122,7 +122,7 @@ static BOOL GPSLabConfigBool(NSDictionary *dictionary, NSString *key, BOOL fallb
     }
     self.altitude = GPSLabClampDouble(self.altitude, -500.0, 100000.0);
     self.heading = GPSLabNormalizeHeading(self.heading);
-    self.driftRadiusMeters = GPSLabClampDouble(self.driftRadiusMeters, 1.0, 500.0);
+    self.driftRadiusMeters = GPSLabClampDriftRadiusMeters(self.driftRadiusMeters);
     self.routeCustomSpeedKmh = GPSLabClampDouble(self.routeCustomSpeedKmh, 1.0, 300.0);
     if (self.routeMode < GPSLabRouteModeDriving || self.routeMode > GPSLabRouteModeCustom) {
         self.routeMode = GPSLabRouteModeDriving;
