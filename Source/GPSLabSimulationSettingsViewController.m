@@ -11,6 +11,8 @@
 #import "GPSLabWiFiSimulationModule.h"
 
 @interface GPSLabSimulationSettingsViewController ()
+@property (nonatomic, strong) UISwitch *simulationSwitch;
+@property (nonatomic, strong) UILabel *simulationStateLabel;
 @property (nonatomic, strong) UISegmentedControl *wifiSignalSegment;
 @property (nonatomic, strong) UISegmentedControl *bleRSSISegment;
 @property (nonatomic, strong) UITextField *nameField;
@@ -42,9 +44,50 @@
     return field;
 }
 
+- (UIView *)simulationControlRow {
+    UIView *row = [[UIView alloc] initWithFrame:CGRectZero];
+    self.simulationSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
+    self.simulationSwitch.on = (self.kind == GPSLabSimulationKindWiFi)
+        ? [GPSLabSimulationRegistry isWiFiEnabled]
+        : [GPSLabSimulationRegistry isBluetoothEnabled];
+    [self.simulationSwitch addTarget:self
+                              action:@selector(simulationSwitchChanged)
+                    forControlEvents:UIControlEventValueChanged];
+
+    self.simulationStateLabel = [self bodyLabel:@""];
+    self.simulationStateLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.simulationSwitch.translatesAutoresizingMaskIntoConstraints = NO;
+    [row addSubview:self.simulationStateLabel];
+    [row addSubview:self.simulationSwitch];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.simulationStateLabel.leadingAnchor constraintEqualToAnchor:row.leadingAnchor],
+        [self.simulationStateLabel.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [self.simulationSwitch.trailingAnchor constraintEqualToAnchor:row.trailingAnchor],
+        [self.simulationSwitch.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.simulationStateLabel.trailingAnchor constant:12.0],
+        [self.simulationSwitch.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [row.heightAnchor constraintGreaterThanOrEqualToConstant:44.0],
+    ]];
+    [self updateSimulationStateLabel];
+    return row;
+}
+
+- (void)simulationSwitchChanged {
+    [self updateSimulationStateLabel];
+}
+
+- (void)updateSimulationStateLabel {
+    NSString *state = GPSLabLocalized(self.simulationSwitch.on ? @"profiles.value.on" : @"profiles.value.off");
+    NSString *title = (self.kind == GPSLabSimulationKindWiFi)
+        ? GPSLabLocalized(@"sim.wifi.title")
+        : GPSLabLocalized(@"sim.ble.title");
+    self.simulationStateLabel.text = [NSString stringWithFormat:@"%@ — %@", title, state];
+}
+
 - (void)buildForm {
     UIStackView *content = self.contentStack;
     self.noteLabel = [self bodyLabel:GPSLabLocalized(@"sim.note")];
+
+    [content addArrangedSubview:[self simulationControlRow]];
 
     if (self.kind == GPSLabSimulationKindWiFi) {
         self.nameField = [self plainFieldWithPlaceholder:GPSLabLocalized(@"sim.wifi.profileName")
@@ -52,8 +95,9 @@
         self.ssidField = [self plainFieldWithPlaceholder:GPSLabLocalized(@"sim.wifi.ssid")
                                                     text:self.wifiConfig.ssid];
         self.wifiSignalSegment = [[UISegmentedControl alloc] initWithItems:@[@"", @"", @""]];
+        NSInteger signal = self.wifiConfig != nil ? self.wifiConfig.signal : 90;
         self.wifiSignalSegment.selectedSegmentIndex =
-            (self.wifiConfig.signal >= 75) ? 0 : ((self.wifiConfig.signal >= 45) ? 1 : 2);
+            (signal >= 75) ? 0 : ((signal >= 45) ? 1 : 2);
         [content addArrangedSubview:[self fieldLabelWithKey:@"sim.wifi.profileName"]];
         [content addArrangedSubview:self.nameField];
         [content addArrangedSubview:[self fieldLabelWithKey:@"sim.wifi.ssid"]];
@@ -66,8 +110,9 @@
         self.deviceField = [self plainFieldWithPlaceholder:GPSLabLocalized(@"sim.ble.deviceName")
                                                       text:self.bluetoothConfig.deviceName];
         self.bleRSSISegment = [[UISegmentedControl alloc] initWithItems:@[@"-45 dBm", @"-60 dBm", @"-75 dBm"]];
+        NSInteger rssi = self.bluetoothConfig != nil ? self.bluetoothConfig.rssi : -60;
         self.bleRSSISegment.selectedSegmentIndex =
-            (self.bluetoothConfig.rssi >= -52) ? 0 : ((self.bluetoothConfig.rssi >= -67) ? 1 : 2);
+            (rssi >= -52) ? 0 : ((rssi >= -67) ? 1 : 2);
         self.patternField = [self plainFieldWithPlaceholder:GPSLabLocalized(@"sim.ble.pattern")
                                                        text:self.bluetoothConfig.pattern];
         [content addArrangedSubview:[self fieldLabelWithKey:@"sim.ble.profileName"]];
@@ -98,6 +143,7 @@
         [self.wifiSignalSegment setTitle:GPSLabLocalized(@"sim.signal.medium") forSegmentAtIndex:1];
         [self.wifiSignalSegment setTitle:GPSLabLocalized(@"sim.signal.weak") forSegmentAtIndex:2];
     }
+    [self updateSimulationStateLabel];
 }
 
 - (NSInteger)signalValue {
@@ -130,8 +176,10 @@
             return;
         }
         if (self.saveWiFiHandler == nil || !self.saveWiFiHandler(normalized)) {
-            return; // keep the sheet open so the user's input is not lost
+            return;
         }
+        [GPSLabSimulationRegistry setWiFiEnabled:self.simulationSwitch.on];
+        [GPSLabSimulationRegistry activateWiFiConfig:normalized];
     } else {
         GPSLabProfileBluetoothConfig *candidate =
             [[GPSLabProfileBluetoothConfig alloc] initWithProfileName:self.nameField.text ?: @""
@@ -148,6 +196,8 @@
         if (self.saveBluetoothHandler == nil || !self.saveBluetoothHandler(normalized)) {
             return;
         }
+        [GPSLabSimulationRegistry setBluetoothEnabled:self.simulationSwitch.on];
+        [GPSLabSimulationRegistry activateBluetoothConfig:normalized];
     }
     [self gpslab_dismissSheet];
 }

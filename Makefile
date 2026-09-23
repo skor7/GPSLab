@@ -32,6 +32,8 @@ GPSLab_FILES = \
 	Source/GPSLabWiFiSimulationModule.m \
 	Source/GPSLabBluetoothSimulationModule.m \
 	Source/GPSLabSimulationRegistry.m \
+	Source/GPSLabBluetoothRuntime.m \
+	Source/GPSLabWiFiRuntime.m \
 	Source/GPSLabProfileApplicationCoordinator.m \
 	Source/GPSLabEngineProfileBackend.m \
 	Source/GPSLabScheduler.m \
@@ -71,12 +73,8 @@ GPSLab_FILES = \
 	Source/dylib_init.m
 
 GPSLab_CFLAGS = -fobjc-arc -Wall -Wextra
-GPSLab_FRAMEWORKS = Foundation CoreLocation UIKit MapKit Security
+GPSLab_FRAMEWORKS = Foundation CoreLocation UIKit MapKit Security CoreBluetooth NetworkExtension
 
-# Canonical Theos way to set the dylib install name. The library template expands
-# `TARGET_LDFLAGS_DYNAMICLIB` as `-dynamiclib -install_name "$(LOCAL_INSTALL_PATH)/$(1)"`
-# where `LOCAL_INSTALL_PATH` comes from `<instance>_INSTALL_PATH`. This produces
-# `-install_name @executable_path/Frameworks/GPSLab.dylib` with no duplicate LDFLAGS.
 GPSLab_INSTALL_PATH = @executable_path/Frameworks
 
 include $(THEOS_MAKE_PATH)/library.mk

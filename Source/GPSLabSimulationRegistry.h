@@ -2,8 +2,7 @@
 //  GPSLabSimulationRegistry.h
 //  GPSLab
 //
-//  A tiny registry of the GPSLab simulation/test modules. Deliberately small:
-//  no framework is loaded and no host process is modified.
+//  Registry and master controls for host-app-only environment simulation.
 //
 
 #import "GPSLabSimulationModule.h"
@@ -14,23 +13,23 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface GPSLabSimulationRegistry : NSObject
 
-/** Capability descriptors for every registered module, in display order. */
 + (NSArray<GPSLabSimulationCapability *> *)capabilities;
-
 + (GPSLabWiFiSimulationModule *)wifiModule;
 + (GPSLabBluetoothSimulationModule *)bluetoothModule;
 
-/**
- * Activates (or clears, when nil) the in-memory Wi-Fi test metadata for the
- * currently applied profile. Config-only: no hardware API is touched. Passing an
- * invalid config clears the active config instead of storing garbage.
- */
 + (void)activateWiFiConfig:(nullable GPSLabProfileWiFiConfig *)config;
 + (void)activateBluetoothConfig:(nullable GPSLabProfileBluetoothConfig *)config;
-
-/** The currently active test metadata, or nil. Read-only, in-memory. */
 + (nullable GPSLabProfileWiFiConfig *)activeWiFiConfig;
 + (nullable GPSLabProfileBluetoothConfig *)activeBluetoothConfig;
+
+/** Independent master controls. OFF always means original host behavior. */
++ (BOOL)isWiFiEnabled;
++ (void)setWiFiEnabled:(BOOL)enabled;
++ (BOOL)isBluetoothEnabled;
++ (void)setBluetoothEnabled:(BOOL)enabled;
+
+/** Installs public-API host-process interception. Safe to call repeatedly. */
++ (BOOL)installRuntimeHooks;
 
 @end
 

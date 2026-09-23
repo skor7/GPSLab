@@ -5,10 +5,21 @@
 
 #import "GPSLabSimulationRegistry.h"
 
+#import <objc/message.h>
+
 static GPSLabProfileWiFiConfig *gGPSLabActiveWiFiConfig = nil;
 static GPSLabProfileBluetoothConfig *gGPSLabActiveBluetoothConfig = nil;
 
+static NSString * const kGPSLabSimulationSuite = @"com.gpslab.runtime";
+static NSString * const kGPSLabWiFiEnabledKey = @"GPSLab.simulation.wifi.enabled";
+static NSString * const kGPSLabBluetoothEnabledKey = @"GPSLab.simulation.bluetooth.enabled";
+
 @implementation GPSLabSimulationRegistry
+
++ (NSUserDefaults *)simulationDefaults {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:kGPSLabSimulationSuite];
+    return defaults ?: [NSUserDefaults standardUserDefaults];
+}
 
 + (GPSLabWiFiSimulationModule *)wifiModule {
     static GPSLabWiFiSimulationModule *module = nil;
@@ -33,27 +44,65 @@ static GPSLabProfileBluetoothConfig *gGPSLabActiveBluetoothConfig = nil;
 }
 
 + (void)activateWiFiConfig:(nullable GPSLabProfileWiFiConfig *)config {
-    if (config == nil) {
-        gGPSLabActiveWiFiConfig = nil;
-        return;
+    @synchronized(self) {
+        gGPSLabActiveWiFiConfig = (config == nil) ? nil : [self.wifiModule normalizedConfig:config];
     }
-    gGPSLabActiveWiFiConfig = [self.wifiModule normalizedConfig:config];
 }
 
 + (void)activateBluetoothConfig:(nullable GPSLabProfileBluetoothConfig *)config {
-    if (config == nil) {
-        gGPSLabActiveBluetoothConfig = nil;
-        return;
+    @synchronized(self) {
+        gGPSLabActiveBluetoothConfig = (config == nil) ? nil : [self.bluetoothModule normalizedConfig:config];
     }
-    gGPSLabActiveBluetoothConfig = [self.bluetoothModule normalizedConfig:config];
 }
 
 + (GPSLabProfileWiFiConfig *)activeWiFiConfig {
-    return gGPSLabActiveWiFiConfig;
+    @synchronized(self) {
+        return gGPSLabActiveWiFiConfig;
+    }
 }
 
 + (GPSLabProfileBluetoothConfig *)activeBluetoothConfig {
-    return gGPSLabActiveBluetoothConfig;
+    @synchronized(self) {
+        return gGPSLabActiveBluetoothConfig;
+    }
+}
+
++ (BOOL)isWiFiEnabled {
+    return [[self simulationDefaults] boolForKey:kGPSLabWiFiEnabledKey];
+}
+
++ (void)setWiFiEnabled:(BOOL)enabled {
+    [[self simulationDefaults] setBool:enabled forKey:kGPSLabWiFiEnabledKey];
+}
+
++ (BOOL)isBluetoothEnabled {
+    return [[self simulationDefaults] boolForKey:kGPSLabBluetoothEnabledKey];
+}
+
++ (void)setBluetoothEnabled:(BOOL)enabled {
+    [[self simulationDefaults] setBool:enabled forKey:kGPSLabBluetoothEnabledKey];
+}
+
++ (BOOL)installRuntimeHooks {
+    BOOL bluetooth = NO;
+    BOOL wifi = NO;
+    SEL selector = NSSelectorFromString(@"installHooks");
+
+    Class bluetoothClass = NSClassFromString(@"GPSLabBluetoothRuntime");
+    if (bluetoothClass != Nil && [bluetoothClass respondsToSelector:selector]) {
+        BOOL (*invoke)(id, SEL) = (BOOL (*)(id, SEL))[bluetoothClass methodForSelector:selector];
+        bluetooth = invoke != NULL ? invoke(bluetoothClass, selector) : NO;
+    }
+
+    Class wifiClass = NSClassFromString(@"GPSLabWiFiRuntime");
+    if (wifiClass != Nil && [wifiClass respondsToSelector:selector]) {
+        BOOL (*invoke)(id, SEL) = (BOOL (*)(id, SEL))[wifiClass methodForSelector:selector];
+        wifi = invoke != NULL ? invoke(wifiClass, selector) : NO;
+    }
+
+    // One unavailable public API must not prevent the other simulation module
+    // from functioning; installation succeeds when at least one hook set exists.
+    return bluetooth || wifi;
 }
 
 @end

@@ -2,18 +2,6 @@
 //  GPSLabSimulationModuleTests.m
 //  GPSLab
 //
-//  Foundation tests for the Wi-Fi / Bluetooth *test* modules: capability
-//  descriptors, validation bounds and normalization. No hardware API exists in
-//  these modules, so the tests assert config-only behaviour and typed results.
-//
-//  Build/run (macOS):
-//    clang -fobjc-arc -fmodules -framework Foundation -framework CoreLocation \
-//      -ISource tests/GPSLabSimulationModuleTests.m Source/GPSLabSimulationModule.m \
-//      Source/GPSLabWiFiSimulationModule.m Source/GPSLabBluetoothSimulationModule.m \
-//      Source/GPSLabSimulationRegistry.m Source/GPSLabProfile.m Source/GPSLabProfileCore.c \
-//      -o /tmp/gpslab-simulation-tests
-//    /tmp/gpslab-simulation-tests
-//
 
 #import <Foundation/Foundation.h>
 
@@ -40,7 +28,7 @@ static void test_capabilities(void) {
           @"bluetooth capability identifier");
     for (GPSLabSimulationCapability *capability in capabilities) {
         CHECK(capability.availability == GPSLabSimulationAvailabilityAvailable,
-              @"config-only modules are available");
+              @"host-app simulation modules are available");
         CHECK(capability.localizedTitleKey.length > 0, @"capability has a title key");
     }
 }
@@ -79,7 +67,7 @@ static void test_bluetooth_validation(void) {
         [[GPSLabProfileBluetoothConfig alloc] initWithProfileName:@"BLE test"
                                                        deviceName:@"GPSLab BLE"
                                                              rssi:-60
-                                                          pattern:@"public"];
+                                                          pattern:@"{\"poweredOn\":true,\"peripherals\":[{\"uuid\":\"F0D0A001-0000-4000-8000-000000000001\",\"localName\":\"GPSLab BLE\",\"rssi\":-60,\"manufacturerData\":\"01020304\",\"serviceUUIDs\":[\"180D\"],\"connectable\":true}]}"];
     CHECK([module validateConfig:valid].code == GPSLabSimulationResultOK, @"valid ble accepted");
 
     GPSLabProfileBluetoothConfig *badRSSI =
@@ -103,7 +91,44 @@ static void test_bluetooth_validation(void) {
 
     GPSLabProfileBluetoothConfig *normalized = [module normalizedConfig:valid];
     CHECK(normalized != nil, @"valid ble normalizes");
-    CHECK([normalized.pattern isEqualToString:@"public"], @"pattern metadata preserved");
+    CHECK([normalized.pattern containsString:@"peripherals"], @"advanced advertisement JSON preserved");
+}
+
+static void test_master_controls_and_active_configs(void) {
+    BOOL oldWiFi = [GPSLabSimulationRegistry isWiFiEnabled];
+    BOOL oldBluetooth = [GPSLabSimulationRegistry isBluetoothEnabled];
+
+    [GPSLabSimulationRegistry setWiFiEnabled:NO];
+    [GPSLabSimulationRegistry setBluetoothEnabled:NO];
+    CHECK(![GPSLabSimulationRegistry isWiFiEnabled], @"wifi defaults to passthrough when disabled");
+    CHECK(![GPSLabSimulationRegistry isBluetoothEnabled], @"bluetooth defaults to passthrough when disabled");
+
+    [GPSLabSimulationRegistry setWiFiEnabled:YES];
+    [GPSLabSimulationRegistry setBluetoothEnabled:YES];
+    CHECK([GPSLabSimulationRegistry isWiFiEnabled], @"wifi master control persists enabled state");
+    CHECK([GPSLabSimulationRegistry isBluetoothEnabled], @"bluetooth master control persists enabled state");
+
+    GPSLabProfileWiFiConfig *wifi = [[GPSLabProfileWiFiConfig alloc] initWithProfileName:@"QA"
+                                                                                    ssid:@"QA-WiFi"
+                                                                                  signal:70];
+    GPSLabProfileBluetoothConfig *ble = [[GPSLabProfileBluetoothConfig alloc] initWithProfileName:@"QA"
+                                                                                       deviceName:@"QA-BLE"
+                                                                                             rssi:-55
+                                                                                          pattern:@""];
+    [GPSLabSimulationRegistry activateWiFiConfig:wifi];
+    [GPSLabSimulationRegistry activateBluetoothConfig:ble];
+    CHECK([[GPSLabSimulationRegistry activeWiFiConfig].ssid isEqualToString:@"QA-WiFi"],
+          @"active wifi config retained");
+    CHECK([[GPSLabSimulationRegistry activeBluetoothConfig].deviceName isEqualToString:@"QA-BLE"],
+          @"active bluetooth config retained");
+
+    [GPSLabSimulationRegistry activateWiFiConfig:nil];
+    [GPSLabSimulationRegistry activateBluetoothConfig:nil];
+    CHECK([GPSLabSimulationRegistry activeWiFiConfig] == nil, @"wifi config clears safely");
+    CHECK([GPSLabSimulationRegistry activeBluetoothConfig] == nil, @"bluetooth config clears safely");
+
+    [GPSLabSimulationRegistry setWiFiEnabled:oldWiFi];
+    [GPSLabSimulationRegistry setBluetoothEnabled:oldBluetooth];
 }
 
 int main(void) {
@@ -111,6 +136,7 @@ int main(void) {
         test_capabilities();
         test_wifi_validation();
         test_bluetooth_validation();
+        test_master_controls_and_active_configs();
     }
 
     if (gFailures == 0) {

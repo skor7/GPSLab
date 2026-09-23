@@ -2,8 +2,8 @@
 //  dylib_init.m
 //  GPSLab
 //
-//  Dylib constructor: installs the CoreLocation interception exactly once and
-//  starts the lifecycle coordinator once UIKit is ready.
+//  Dylib constructor: installs CoreLocation plus host-app-only environment
+//  simulation interception exactly once and starts the lifecycle coordinator.
 //
 
 #import <Foundation/Foundation.h>
@@ -14,23 +14,19 @@
 #import "GPSLabEngine.h"
 #import "GPSLabLicenseManager.h"
 #import "GPSLabRuntime.h"
+#import "GPSLabSimulationRegistry.h"
 
 __attribute__((constructor))
 static void GPSLabDylibInitialize(void) {
     @autoreleasepool {
         GPSLabDiagDylibLoaded();
 
-        // Restore the persisted allow-listed configuration before hooks go live.
         [[GPSLabEngine sharedEngine] loadPersistedConfiguration];
-
-        // Resolve the signed entitlement (verified Keychain cache first, then a bounded
-        // network refresh). This applies the fail-closed gate before any hook can run.
         [[GPSLabLicenseManager sharedManager] loadAndStart];
 
         (void)[GPSLabCoreLocationHooks installHooks];
+        (void)[GPSLabSimulationRegistry installRuntimeHooks];
 
-        // The overlay must only be installed after the app is ready; the runtime
-        // observes UIApplication/scene notifications and attaches then.
         [[GPSLabRuntime sharedRuntime] install];
     }
 }
