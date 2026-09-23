@@ -7,15 +7,9 @@
 //
 
 #import "GPSLabSheetViewController.h"
+#import "GPSLabTypes.h"
 
 NS_ASSUME_NONNULL_BEGIN
-
-/** Map style values used by the canvas; kept in-memory for this phase. */
-typedef NS_ENUM(NSInteger, GPSLabMapStyle) {
-    GPSLabMapStyleStandard = 0,
-    GPSLabMapStyleHybrid,
-    GPSLabMapStyleSatellite,
-};
 
 @interface GPSLabOptionsViewController : GPSLabSheetViewController
 

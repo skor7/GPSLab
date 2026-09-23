@@ -189,6 +189,7 @@ const GPSLabLocalizationEntry kGPSLabLocalizationTable[] = {
     { "panel.coord.altitude", "الارتفاع (م)", "Altitude (m)" },
     { "panel.heading.format", "الاتجاه: %@", "Heading: %@" },
     { "panel.toggle.drift", "التذبذب", "Fluctuation" },
+    { "panel.drift.range", "مدى التذبذب", "Drift range" },
     { "panel.toggle.keepLast", "الاحتفاظ بآخر موقع", "Keep last location" },
     { "panel.toggle.realLocation", "إظهار الموقع الحقيقي", "Show real location" },
     { "panel.schedule", "الجدولة الزمنية", "Schedule" },

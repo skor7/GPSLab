@@ -500,6 +500,7 @@
 }
 
 - (void)saveTapped {
+    [self.view endEditing:YES];
     NSString *name = [self.nameField.text stringByTrimmingCharactersInSet:
                       [NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (name.length == 0) {
@@ -675,6 +676,7 @@
 }
 
 - (void)deleteTapped {
+    [self.view endEditing:YES];
     if (self.deleteHandler != nil) {
         self.deleteHandler();
     }

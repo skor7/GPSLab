@@ -110,15 +110,18 @@
 #pragma mark - Actions
 
 - (void)cancelTapped {
+    [self.view endEditing:YES];
     [self gpslab_dismissSheet];
 }
 
 - (void)zeroTapped {
+    [self.view endEditing:YES];
     self.valueField.text = @"0";
     [self commitValue:0.0];
 }
 
 - (void)applyTapped {
+    [self.view endEditing:YES];
     double value = 0.0;
     if (![GPSLabLocalization parseNumber:self.valueField.text value:&value] || !isfinite(value)) {
         [self showErrorKey:@"altitude.error.invalid"];

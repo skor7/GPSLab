@@ -72,6 +72,17 @@ static void test_lookup(void) {
     CHECK(GPSLabLocalizationLookup(NULL, GPSLabLanguageArabic) == NULL, "NULL key resolves to NULL");
 }
 
+/** The compact overlay drift row requires this exact localized label text. */
+static void test_drift_range_catalog(void) {
+    const char *english = GPSLabLocalizationLookup("panel.drift.range", GPSLabLanguageEnglish);
+    const char *arabic = GPSLabLocalizationLookup("panel.drift.range", GPSLabLanguageArabic);
+    CHECK(english != NULL && strcmp(english, "Drift range") == 0,
+          "panel.drift.range resolves to the exact English label");
+    CHECK(arabic != NULL &&
+              strcmp(arabic, "\u0645\u062f\u0649 \u0627\u0644\u062a\u0630\u0628\u0630\u0628") == 0,
+          "panel.drift.range resolves to the exact Arabic label");
+}
+
 static void test_normalization(void) {
     char buffer[64];
 
@@ -136,6 +147,7 @@ int main(void) {
     test_catalog_complete();
     test_language_resolution();
     test_lookup();
+    test_drift_range_catalog();
     test_normalization();
     test_parse();
 

@@ -968,4 +968,119 @@ for testfile in tests/gpslab_localization_test.c tests/GPSLabLocalizationTests.m
 done
 pass "localization and modal policy tests are present"
 
+# --------------------------------- Overlay drift draft / keyboard / map style --
+echo "== Overlay drift draft, keyboard and map-style preference =="
+OVERLAY="$SOURCE_DIR/GPSLabOverlayViewController.m"
+SHEET="$SOURCE_DIR/GPSLabSheetViewController.m"
+STORE="$SOURCE_DIR/GPSLabStore.m"
+MAP_TEST="$ROOT/tests/gpslab_overlay_ui_wiring_test.c"
+[[ -f "$MAP_TEST" ]] || fail "overlay UI wiring test missing: tests/gpslab_overlay_ui_wiring_test.c"
+grep -q -F "gpslab_overlay_ui_wiring_test.c" "$ROOT/.github/workflows/tests.yml" \
+    || fail "the overlay UI wiring test must be run by the tests workflow"
+
+# Drift is an overlay-owned draft: the switch and the sheet edit only the draft,
+# and Apply commits both values while Cancel discards them.
+grep -q -F "pendingDriftEnabled" "$OVERLAY" || fail "overlay must own pendingDriftEnabled"
+grep -q -F "pendingDriftRadius" "$OVERLAY" || fail "overlay must own pendingDriftRadius"
+grep -q -F "self.pendingDriftEnabled = configuration.driftEnabled" "$OVERLAY" \
+    || fail "the drift draft must be seeded from the committed configuration"
+grep -q -F "self.pendingDriftRadius = configuration.driftRadiusMeters" "$OVERLAY" \
+    || fail "the drift radius draft must be seeded from the committed configuration"
+if sed -n '/- (void)driftChanged {/,/^}/p' "$OVERLAY" | grep -q -F "setDriftEnabled"; then
+    fail "the drift switch must never toggle the engine on edit"
+fi
+if sed -n '/- (void)presentFluctuationSheet {/,/^}/p' "$OVERLAY" | grep -q -F "setDriftEnabled"; then
+    fail "the fluctuation sheet must only edit the draft"
+fi
+if sed -n '/- (void)presentFluctuationSheet {/,/^}/p' "$OVERLAY" | grep -q -F "sharedEngine"; then
+    fail "the fluctuation sheet must never reach the engine"
+fi
+grep -q -F "sheet.fluctuationEnabled = self.pendingDriftEnabled" "$OVERLAY" \
+    || fail "the fluctuation sheet must be initialized from the draft"
+grep -q -F "sheet.radiusMeters = self.pendingDriftRadius" "$OVERLAY" \
+    || fail "the fluctuation sheet must be initialized from the draft radius"
+if grep -q -F "commitPendingDriftIfNeeded" "$OVERLAY"; then
+    fail "the direct drift commit helper must be eliminated"
+fi
+grep -q -F "driftRangeRowView" "$OVERLAY" \
+    || fail "the compact drift range row is missing"
+grep -q -F "panel.drift.range" "$OVERLAY" \
+    || fail "the drift range row must use the panel.drift.range label key"
+grep -q -F '"panel.drift.range", "مدى التذبذب", "Drift range"' "$SOURCE_DIR/GPSLabLocalizationCore.c" \
+    || fail "the exact drift-range catalog label (مدى التذبذب / Drift range) is missing"
+grep -q -F "driftRangeChevronLabel" "$OVERLAY" \
+    || fail "the drift range row must render a visible chevron"
+grep -q -F "driftRangeTapped" "$OVERLAY" \
+    || fail "the drift range row must open the fluctuation sheet"
+# Static/route Apply bundle drift into the SAME validated configuration; a failed
+# Apply never writes drift and no direct engine drift setter is used.
+grep -q -F "configuration.driftEnabled = self.pendingDriftEnabled" "$OVERLAY" \
+    || fail "Apply must bundle the drift enabled flag into the configuration"
+grep -q -F "configuration.driftRadiusMeters = GPSLabClampDriftRadiusMeters(self.pendingDriftRadius)" "$OVERLAY" \
+    || fail "Apply must bundle the clamped drift radius into the configuration"
+for body in \
+    '/- (BOOL)applyCoordinate:(CLLocationCoordinate2D)coordinate altitude:(double)altitude heading:(double)heading {/,/^}/p' \
+    '/- (void)startRouteFromPending {/,/^}/p'; do
+    if sed -n "$body" "$OVERLAY" | grep -q -F "setDriftEnabled"; then
+        fail "Apply paths must never use a direct drift setter ($body)"
+    fi
+done
+grep -q -F "syncDriftDraftFromCommittedConfiguration" "$OVERLAY" \
+    || fail "a successful Apply must resync the draft from the committed configuration"
+if [[ "$(grep -c -F -- '- (void)applyMapStyle:(NSInteger)style {' "$OVERLAY")" != "1" ]]; then
+    fail "there must be exactly one applyMapStyle entry point"
+fi
+pass "overlay owns the drift draft; edits never toggle the engine; Apply bundles drift after validation; Cancel discards"
+
+# Keyboard: centralized localized Done accessory + safe background tap + scoped
+# end editing, with the existing keyboard guide/interactive scroll preserved.
+grep -q -F "keyboardLayoutGuide" "$SHEET" || fail "the sheet keyboard layout guide must be preserved"
+grep -q -F "UIScrollViewKeyboardDismissModeInteractive" "$SHEET" \
+    || fail "the sheet interactive keyboard dismissal must be preserved"
+grep -q -F "gpslab_decimalAccessoryView" "$SHEET" \
+    || fail "a centralized decimal-keyboard accessory is required"
+grep -q -F '"common.done"' "$SHEET" || fail "the decimal Done accessory must be localized"
+grep -q -F "cancelsTouchesInView = NO" "$SHEET" \
+    || fail "the sheet background tap must not block controls"
+grep -q -F "shouldReceiveTouch" "$SHEET" \
+    || fail "the sheet background tap must scope its touches"
+grep -q -F "isBeingDismissed" "$SHEET" \
+    || fail "sheet end editing must be scoped to a real dismissal"
+grep -q -F "viewWillDisappear:(BOOL)animated {" "$SHEET" \
+    || fail "the base sheet must end editing on dismiss"
+for unit in GPSLabManualEntryViewController.m GPSLabProfileFormViewController.m \
+    GPSLabSubscriptionViewController.m GPSLabAltitudeViewController.m; do
+    grep -q -F "endEditing:YES" "$SOURCE_DIR/$unit" || fail "$unit must end editing on Apply/Cancel"
+done
+if ! sed -n '/- (void)activateTapped {/,/^}/p' "$SOURCE_DIR/GPSLabSubscriptionViewController.m" \
+        | grep -q -F "endEditing:YES"; then
+    fail "activation must end editing first"
+fi
+pass "localized Done accessory, safe background tap and scoped form end editing present"
+
+# Map style: persisted UI preference (missing/invalid => Satellite), no schema
+# change, and snapshots that match the selected style.
+grep -q -F 'kGPSLabKeyMapStyle = @"GPSLab.mapStyle"' "$STORE" \
+    || fail "the store must persist the exact GPSLab.mapStyle key"
+grep -q -F -- "- (GPSLabMapStyle)loadMapStyle;" "$SOURCE_DIR/GPSLabStore.h" \
+    || fail "the store must expose loadMapStyle"
+grep -q -F -- "- (void)saveMapStyle:(GPSLabMapStyle)style;" "$SOURCE_DIR/GPSLabStore.h" \
+    || fail "the store must expose saveMapStyle"
+grep -q -F "return GPSLabMapStyleSatellite;" "$STORE" \
+    || fail "a missing/invalid map style must resolve to Satellite"
+for style in "GPSLabMapStyleStandard = 0" "GPSLabMapStyleHybrid" "GPSLabMapStyleSatellite"; do
+    grep -q -F "$style" "$SOURCE_DIR/GPSLabTypes.h" \
+        || fail "the shared map-style enum is missing: $style"
+done
+grep -q -F "loadMapStyle" "$OVERLAY" || fail "the foreground must load the persisted style"
+grep -q -F "mapTypeForStyle" "$OVERLAY" || fail "the snapshot must match the selected style"
+if grep -q -F "options.mapType = MKMapTypeStandard" "$OVERLAY"; then
+    fail "the snapshot must never be hardcoded to the standard style"
+fi
+if grep -q -F 'kGPSLabKeyMapStyle' "$SOURCE_DIR/GPSLabConfiguration.m" \
+        || grep -q -F "mapStyle" "$SOURCE_DIR/GPSLabProfile.m"; then
+    fail "the map style must never enter the configuration/profile schema"
+fi
+pass "map style is a persisted UI preference with matching snapshots and no schema change"
+
 echo "All GPSLab static checks passed."

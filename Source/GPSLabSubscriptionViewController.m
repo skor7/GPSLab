@@ -225,6 +225,9 @@
 #pragma mark - Actions
 
 - (void)activateTapped {
+    // End editing FIRST so the activation is never raced by a pending field resign
+    // or the keyboard's own teardown. Licensing behavior is unchanged.
+    [self.view endEditing:YES];
     if (![[GPSLabLicenseManager sharedManager] isServiceConfigured]) {
         self.feedbackLabel.text = GPSLabLocalized(@"subscription.activationUnavailable");
         return;

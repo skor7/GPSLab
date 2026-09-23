@@ -193,6 +193,21 @@ jobs:
             -o /tmp/gpslab_selection_wiring_test
           /tmp/gpslab_selection_wiring_test
 
+  overlay-ui-wiring-tests:
+    name: Overlay UI wiring (portable C, source-validated)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run overlay UI wiring assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_overlay_ui_wiring_test.c \
+            -o /tmp/gpslab_overlay_ui_wiring_test
+          /tmp/gpslab_overlay_ui_wiring_test
+
   store-tests:
     name: Store draft + duplicate-aware bookmarks (macOS Foundation)
     runs-on: macos-latest

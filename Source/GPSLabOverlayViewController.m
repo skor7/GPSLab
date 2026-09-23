@@ -179,6 +179,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 @property (nonatomic, strong) GPSLabHeadingView *headingView;
 @property (nonatomic, strong) UILabel *headingValueLabel;
 @property (nonatomic, strong) UISwitch *driftSwitch;
+@property (nonatomic, strong) UILabel *driftRangeCaptionLabel;
+@property (nonatomic, strong) UILabel *driftRangeValueLabel;
+@property (nonatomic, strong) UILabel *driftRangeChevronLabel;
+@property (nonatomic, strong) UIButton *driftRangeButton;
 @property (nonatomic, strong) UISwitch *keepLastSwitch;
 @property (nonatomic, strong) UISwitch *realLocationSwitch;
 @property (nonatomic, strong) UIButton *scheduleButton;
@@ -231,6 +235,13 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 @property (nonatomic, assign) double pendingHeading;
 @property (nonatomic, strong, nullable) NSString *pendingSourceKindKey;
 
+// Drift draft, owned by the overlay like the coordinate preview. The switch, the
+// compact range row and the fluctuation sheet only edit these; the engine is
+// written exclusively by a validated Apply (bundled into the same configuration
+// as the coordinate/route), never by an edit.
+@property (nonatomic, assign) BOOL pendingDriftEnabled;
+@property (nonatomic, assign) double pendingDriftRadius;
+
 @property (nonatomic, strong, nullable) NSTimer *tickTimer;
 @property (nonatomic, strong, nullable) NSTimer *snapshotTimer;
 
@@ -257,7 +268,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
     self.view.backgroundColor = GPSLabThemePanelColor();
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-    self.mapStyle = GPSLabMapStyleStandard;
+    // Foreground map style is a persisted UI preference (missing/invalid => Satellite).
+    self.mapStyle = [[GPSLabStore sharedStore] loadMapStyle];
     self.masterIntentGuard = [[GPSLabMasterIntentGuard alloc] init];
 
     [self buildBackground];
@@ -1026,6 +1038,7 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         self.mapFavoritesSegment, self.staticRouteSegment,
         self.coordsTitleLabel, self.coordsBigLabel, coordGrid, headingRow,
         [self toggleRowWithKey:@"panel.toggle.drift" control:self.driftSwitch],
+        [self driftRangeRowView],
         [self toggleRowWithKey:@"panel.toggle.keepLast" control:self.keepLastSwitch],
         [self toggleRowWithKey:@"panel.toggle.realLocation" control:self.realLocationSwitch],
         [self scheduleRowView],
@@ -1054,6 +1067,75 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     row.spacing = 12.0;
     row.backgroundColor = UIColor.clearColor;
     return row;
+}
+
+// Compact, whole-row tappable localized drift range control shown immediately
+// under the drift switch. The caption uses the exact localized catalog text
+// ("مدى التذبذب" / "Drift range"), the live draft value is separate (so the shared
+// subtree localization can never corrupt it), and a visible `>` chevron is the
+// affordance. Tapping the row opens the fluctuation sheet; it never writes the
+// engine (the sheet edits the same draft).
+- (UIView *)driftRangeRowView {
+    self.driftRangeButton = [UIButton buttonWithType:UIButtonTypeCustom];
+    self.driftRangeButton.translatesAutoresizingMaskIntoConstraints = NO;
+    self.driftRangeButton.contentHorizontalAlignment = UIControlContentHorizontalAlignmentFill;
+    [self.driftRangeButton addTarget:self action:@selector(driftRangeTapped)
+                    forControlEvents:UIControlEventTouchUpInside];
+
+    self.driftRangeCaptionLabel = [self themedLabel:12.0 weight:UIFontWeightRegular color:GPSLabThemeMutedColor()];
+    // A real catalog key so the shared subtree localization re-applies the exact
+    // localized label text.
+    self.driftRangeCaptionLabel.accessibilityIdentifier = @"panel.drift.range";
+    self.driftRangeCaptionLabel.text = GPSLabLocalized(@"panel.drift.range");
+    self.driftRangeCaptionLabel.userInteractionEnabled = NO;
+    self.driftRangeCaptionLabel.translatesAutoresizingMaskIntoConstraints = NO;
+
+    // Deliberately NO accessibilityIdentifier: the shared subtree pass must not
+    // overwrite the live value. Accessibility exposes the value on the row button.
+    self.driftRangeValueLabel = [self themedLabel:14.0 weight:UIFontWeightMedium color:GPSLabThemeAccentSoftColor()];
+    self.driftRangeValueLabel.textAlignment = NSTextAlignmentRight;
+    self.driftRangeValueLabel.userInteractionEnabled = NO;
+    self.driftRangeValueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [GPSLabLocalization forceLeftToRight:self.driftRangeValueLabel];
+
+    // A visible chevron. The `>` glyph is bidi-mirrored in RTL, so pin it LTR.
+    self.driftRangeChevronLabel = [self themedLabel:14.0 weight:UIFontWeightSemibold color:GPSLabThemeAccentSoftColor()];
+    self.driftRangeChevronLabel.text = @">";
+    self.driftRangeChevronLabel.userInteractionEnabled = NO;
+    self.driftRangeChevronLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    [GPSLabLocalization forceLeftToRight:self.driftRangeChevronLabel];
+
+    [self.driftRangeButton addSubview:self.driftRangeCaptionLabel];
+    [self.driftRangeButton addSubview:self.driftRangeValueLabel];
+    [self.driftRangeButton addSubview:self.driftRangeChevronLabel];
+    [NSLayoutConstraint activateConstraints:@[
+        [self.driftRangeCaptionLabel.leadingAnchor constraintEqualToAnchor:self.driftRangeButton.leadingAnchor
+                                                                  constant:10.0],
+        [self.driftRangeCaptionLabel.centerYAnchor constraintEqualToAnchor:self.driftRangeButton.centerYAnchor],
+        [self.driftRangeValueLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:self.driftRangeCaptionLabel.trailingAnchor
+                                                                            constant:10.0],
+        [self.driftRangeValueLabel.trailingAnchor constraintEqualToAnchor:self.driftRangeChevronLabel.leadingAnchor
+                                                                 constant:-6.0],
+        [self.driftRangeValueLabel.centerYAnchor constraintEqualToAnchor:self.driftRangeButton.centerYAnchor],
+        [self.driftRangeChevronLabel.trailingAnchor constraintEqualToAnchor:self.driftRangeButton.trailingAnchor
+                                                                   constant:-10.0],
+        [self.driftRangeChevronLabel.centerYAnchor constraintEqualToAnchor:self.driftRangeButton.centerYAnchor],
+        [self.driftRangeButton.heightAnchor constraintEqualToConstant:36.0],
+    ]];
+    [self updateDriftRangeDisplay];
+    return self.driftRangeButton;
+}
+
+- (void)updateDriftRangeDisplay {
+    if (self.driftRangeValueLabel == nil) {
+        return;
+    }
+    NSString *value = [NSString stringWithFormat:GPSLabLocalized(@"fluctuation.radiusFormat"),
+                       self.pendingDriftRadius];
+    self.driftRangeValueLabel.text = value;
+    // The whole row is one button: expose the label and the live value for VoiceOver.
+    self.driftRangeButton.accessibilityLabel = [NSString stringWithFormat:@"%@ %@",
+                                                GPSLabLocalized(@"panel.drift.range"), value];
 }
 
 - (UIView *)scheduleRowView {
@@ -1305,6 +1387,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 - (void)loadConfigurationIntoUI {
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
     self.driftSwitch.on = configuration.driftEnabled;
+    // The draft is seeded from the COMMITTED configuration on every load/restore.
+    self.pendingDriftEnabled = configuration.driftEnabled;
+    self.pendingDriftRadius = configuration.driftRadiusMeters;
+    [self updateDriftRangeDisplay];
     self.keepLastSwitch.on = configuration.keepLastCoordinate;
     self.routeSpeedSlider.value = configuration.routeCustomSpeedKmh > 0.0 ? configuration.routeCustomSpeedKmh : 50.0;
     self.routeModeSegment.selectedSegmentIndex = (NSInteger)configuration.routeMode;
@@ -1319,6 +1405,9 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 - (void)applyMapStyle:(NSInteger)style {
     self.mapStyle = style;
+    // The selection is persisted immediately and is INDEPENDENT of the location
+    // Apply/Cancel draft: it is never a pending value and never reverted.
+    [[GPSLabStore sharedStore] saveMapStyle:(GPSLabMapStyle)style];
     if (@available(iOS 16.0, *)) {
         switch (style) {
             case GPSLabMapStyleHybrid:
@@ -1335,6 +1424,21 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
                 break;
             }
         }
+    }
+    // The lightweight background snapshot must always match the selected style.
+    [self scheduleBackgroundSnapshot];
+}
+
+/** Maps the persisted UI style onto the snapshot map type (single source of truth). */
+- (MKMapType)mapTypeForStyle:(GPSLabMapStyle)style {
+    switch (style) {
+        case GPSLabMapStyleHybrid:
+            return MKMapTypeHybrid;
+        case GPSLabMapStyleSatellite:
+            return MKMapTypeSatellite;
+        case GPSLabMapStyleStandard:
+        default:
+            return MKMapTypeStandard;
     }
 }
 
@@ -1388,6 +1492,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     [self.routeStopButton setTitle:GPSLabLocalized(@"route.stop") forState:UIControlStateNormal];
     [self.cancelButton setTitle:GPSLabLocalized(@"common.cancel") forState:UIControlStateNormal];
     [self.applyButton setTitle:GPSLabLocalized(@"panel.actions.apply") forState:UIControlStateNormal];
+    // The subtree pass re-applies the exact localized label; re-apply the live
+    // draft value afterwards (its label has no identifier and is never clobbered).
+    self.driftRangeCaptionLabel.text = GPSLabLocalized(@"panel.drift.range");
+    [self updateDriftRangeDisplay];
 
     self.subscriptionTitleLabel.text = GPSLabLocalized(@"subscription.compact.title");
     self.subscriptionPlanCaption.text = GPSLabLocalized(@"subscription.compact.plan");
@@ -1588,9 +1696,15 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 }
 
 - (void)driftChanged {
-    [[GPSLabEngine sharedEngine] setDriftEnabled:self.driftSwitch.on];
-    [[GPSLabEngine sharedEngine] setDriftRadiusMeters:[[GPSLabEngine sharedEngine] driftRadiusMeters]];
+    // Draft only: editing the switch never touches the engine. Apply commits both
+    // the enabled flag and the radius together.
+    self.pendingDriftEnabled = self.driftSwitch.on;
+    [self updateDriftRangeDisplay];
     [self updateStatusLabel];
+}
+
+- (void)driftRangeTapped {
+    [self presentFluctuationSheet];
 }
 
 - (void)keepLastChanged {
@@ -1648,13 +1762,15 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 }
 
 - (void)applyTapped {
+    [self.view endEditing:YES];
     if (self.staticRouteSegment.selectedSegmentIndex == 1) {
         [self startRouteFromPending];
         return;
     }
     if (self.hasPendingSelection) {
         // Commit the previewed selection through the existing engine path. The
-        // draft is cleared only when the commit actually succeeds.
+        // draft is cleared only when the commit actually succeeds. The drift draft
+        // is bundled into the same validated configuration inside applyCoordinate.
         BOOL applied = [self applyCoordinate:self.pendingCoordinate
                                     altitude:self.pendingAltitude
                                      heading:self.pendingHeading];
@@ -1664,16 +1780,32 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         [self endActiveSearch];
         return;
     }
+    // No pending location: commit the drift draft through the valid anchor path.
     GPSLabConfiguration *configuration = [[GPSLabEngine sharedEngine] configuration];
     [self applyCoordinate:configuration.coordinate altitude:configuration.altitude heading:configuration.heading];
     [self endActiveSearch];
 }
 
 - (void)cancelTapped {
+    [self.view endEditing:YES];
     [self endActiveSearch];
     [self clearPendingSelection];
+    // Discard the drift draft and every other pending edit by resyncing from the
+    // committed configuration (the engine is never written by a cancel).
     [self loadConfigurationIntoUI];
     [self updateTabVisibility];
+}
+
+/**
+ * Reloads the overlay-owned drift draft/display from the COMMITTED configuration.
+ * Called ONLY after a successful application; an edit never reaches the engine.
+ */
+- (void)syncDriftDraftFromCommittedConfiguration {
+    GPSLabConfiguration *committed = [[GPSLabEngine sharedEngine] configuration];
+    self.pendingDriftEnabled = committed.driftEnabled;
+    self.pendingDriftRadius = committed.driftRadiusMeters;
+    self.driftSwitch.on = committed.driftEnabled;
+    [self updateDriftRangeDisplay];
 }
 
 #pragma mark - Profiles
@@ -2220,14 +2352,21 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 
 - (void)presentFluctuationSheet {
     GPSLabFluctuationViewController *sheet = [[GPSLabFluctuationViewController alloc] init];
-    sheet.fluctuationEnabled = [[GPSLabEngine sharedEngine] isDriftEnabled];
-    sheet.radiusMeters = [[GPSLabEngine sharedEngine] driftRadiusMeters];
+    // The sheet is initialized from the DRAFT, and edits only the draft. Nothing
+    // is written to the engine until the overlay's Apply.
+    sheet.fluctuationEnabled = self.pendingDriftEnabled;
+    sheet.radiusMeters = self.pendingDriftRadius;
     GPSLabOverlayViewController *__weak weakSelf = self;
     sheet.changeHandler = ^(BOOL enabled, double radiusMeters) {
-        [[GPSLabEngine sharedEngine] setDriftEnabled:enabled];
-        [[GPSLabEngine sharedEngine] setDriftRadiusMeters:radiusMeters];
-        weakSelf.driftSwitch.on = enabled;
-        [weakSelf updateStatusLabel];
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) {
+            return;
+        }
+        strongSelf.pendingDriftEnabled = enabled;
+        strongSelf.pendingDriftRadius = GPSLabClampDriftRadiusMeters(radiusMeters);
+        strongSelf.driftSwitch.on = enabled;
+        [strongSelf updateDriftRangeDisplay];
+        [strongSelf updateStatusLabel];
     };
     [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:sheet completion:nil];
 }
@@ -2292,6 +2431,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 }
 
 - (BOOL)applyCoordinate:(CLLocationCoordinate2D)coordinate altitude:(double)altitude heading:(double)heading {
+    // Validate the coordinate BEFORE touching any state: a failed Apply must not
+    // commit the drift draft either.
     if (!GPSLabIsValidCoordinate(coordinate.latitude, coordinate.longitude)) {
         return NO;
     }
@@ -2300,8 +2441,15 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     configuration.longitude = coordinate.longitude;
     configuration.altitude = GPSLabClampDouble(altitude, -500.0, 100000.0);
     configuration.heading = GPSLabNormalizeHeading(heading);
+    // Bundle the drift draft into the SAME configuration passed to the engine, so a
+    // successful Apply commits the enabled flag and the clamped radius together.
+    configuration.driftEnabled = self.pendingDriftEnabled;
+    configuration.driftRadiusMeters = GPSLabClampDriftRadiusMeters(self.pendingDriftRadius);
     [[GPSLabEngine sharedEngine] applyConfiguration:configuration];
     [[GPSLabEngine sharedEngine] persistConfiguration];
+    // Only a successful application resyncs the draft/display from the committed,
+    // sanitized configuration.
+    [self syncDriftDraftFromCommittedConfiguration];
     // Record the committed coordinate (not a boolean) as proof of an intentional
     // selection, and add it to recents (legacy proof path).
     [[GPSLabStore sharedStore] recordCommittedSelection:
@@ -2425,7 +2573,13 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     configuration.routeCustomSpeedKmh = self.routeSpeedSlider.value;
     configuration.stopBehavior = (self.routeStopBehaviorSegment.selectedSegmentIndex == 1)
         ? GPSLabStopBehaviorReturnToStart : GPSLabStopBehaviorStayAtCurrent;
+    // Endpoints were validated first; bundle the drift draft into the SAME
+    // configuration so a route Apply commits the enabled flag and clamped radius.
+    configuration.driftEnabled = self.pendingDriftEnabled;
+    configuration.driftRadiusMeters = GPSLabClampDriftRadiusMeters(self.pendingDriftRadius);
     [[GPSLabEngine sharedEngine] applyConfiguration:configuration];
+    // Only the applied configuration resyncs the draft/display.
+    [self syncDriftDraftFromCommittedConfiguration];
     // A manual route change invalidates any scheduled ownership.
     [[GPSLabProfileApplicationCoordinator sharedCoordinator] invalidateAppliedProfile];
 
@@ -3116,7 +3270,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     MKCoordinateRegion region = MKCoordinateRegionMakeWithDistance(anchor, 3000.0, 3000.0);
     MKMapSnapshotOptions *options = [[MKMapSnapshotOptions alloc] init];
     options.region = region;
-    options.mapType = MKMapTypeStandard;
+    // The background snapshot always matches the selected foreground map style.
+    options.mapType = [self mapTypeForStyle:(GPSLabMapStyle)self.mapStyle];
     options.size = CGSizeMake(600.0, 600.0);
     options.scale = 1.0;
     MKMapSnapshotter *snapshotter = [[MKMapSnapshotter alloc] initWithOptions:options];
@@ -3158,8 +3313,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
     self.headingView.heading = displayHeading;
     self.headingValueLabel.text = [NSString stringWithFormat:GPSLabLocalized(@"panel.heading.format"),
                                    [NSString stringWithFormat:@"°%03.0f", displayHeading < 0.0 ? 0.0 : displayHeading]];
-    self.driftSwitch.on = configuration.driftEnabled;
+    self.driftSwitch.on = self.pendingDriftEnabled;
     self.keepLastSwitch.on = configuration.keepLastCoordinate;
+    self.driftRangeCaptionLabel.text = GPSLabLocalized(@"panel.drift.range");
+    [self updateDriftRangeDisplay];
     self.driftSwitch.accessibilityLabel = GPSLabLocalized(@"panel.toggle.drift");
     self.keepLastSwitch.accessibilityLabel = GPSLabLocalized(@"panel.toggle.keepLast");
     self.realLocationSwitch.accessibilityLabel = GPSLabLocalized(@"panel.toggle.realLocation");

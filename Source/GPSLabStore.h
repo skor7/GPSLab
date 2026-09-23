@@ -99,6 +99,16 @@ NS_ASSUME_NONNULL_BEGIN
 /** Removes every persisted coordinate key (used when `keepLastCoordinate` turns off). */
 - (void)clearPersistedCoordinate;
 
+#pragma mark - Map style preference (UI only, never part of the profile schema)
+
+/**
+ * Persisted foreground map style. A missing or invalid stored value resolves to
+ * `GPSLabMapStyleSatellite`; only the three defined styles are returned.
+ */
+- (GPSLabMapStyle)loadMapStyle;
+/** Persists a style; an out-of-range value is stored as the Satellite default. */
+- (void)saveMapStyle:(GPSLabMapStyle)style;
+
 #pragma mark - Pending selection (preview draft)
 
 - (nullable GPSLabPendingSelection *)loadPendingSelection;

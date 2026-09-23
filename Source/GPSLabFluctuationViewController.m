@@ -4,8 +4,9 @@
 //
 //  Compact Arabic drift control: a التذبذب label, a 0..20 m radius slider with a
 //  live "<n> م" readout, and the bounded-walk toggle. Reporting is via
-//  `changeHandler`; the canvas applies it through GPSLabEngine so clamping and
-//  persistence stay in one place. Editing the slider NEVER enables the engine.
+//  `changeHandler`, which the overlay uses to update its OWN draft only; the
+//  engine is written later by the overlay's Apply (clamping/persistence stay in
+//  the engine). Editing the slider NEVER touches the engine.
 //
 
 #import "GPSLabFluctuationViewController.h"

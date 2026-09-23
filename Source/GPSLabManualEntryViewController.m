@@ -63,6 +63,7 @@
 #pragma mark - Actions
 
 - (void)applyTapped {
+    [self.view endEditing:YES];
     double latitude = 0.0;
     double longitude = 0.0;
     double altitude = 0.0;

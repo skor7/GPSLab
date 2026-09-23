@@ -30,6 +30,16 @@ typedef NS_ENUM(NSInteger, GPSLabRouteState) {
     GPSLabRouteStatePaused,
 };
 
+/**
+ * User-selectable foreground map style (a persisted UI preference, not part of
+ * the profile schema). Missing/invalid persisted values resolve to Satellite.
+ */
+typedef NS_ENUM(NSInteger, GPSLabMapStyle) {
+    GPSLabMapStyleStandard = 0,
+    GPSLabMapStyleHybrid,
+    GPSLabMapStyleSatellite,
+};
+
 /** Clamps a finite double into [minimum, maximum]. NaN maps to minimum. */
 FOUNDATION_EXPORT double GPSLabClampDouble(double value, double minimum, double maximum);
 

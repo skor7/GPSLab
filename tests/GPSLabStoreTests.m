@@ -572,6 +572,50 @@ static void test_drift_config_backward_compatible(void) {
           @"legacy negative radius clamps to 0 m");
 }
 
+#pragma mark - Map style preference (UI only)
+
+static void test_map_style_preference(void) {
+    beginStore();
+
+    // Missing value resolves to Satellite.
+    CHECK([gStore loadMapStyle] == GPSLabMapStyleSatellite, @"missing map style defaults to satellite");
+
+    // All three valid styles roundtrip, including across a fresh defaults instance.
+    [gStore saveMapStyle:GPSLabMapStyleStandard];
+    CHECK([gStore loadMapStyle] == GPSLabMapStyleStandard, @"standard persists");
+    CHECK(reopenedStore().loadMapStyle == GPSLabMapStyleStandard, @"standard survives reopen");
+    [gStore saveMapStyle:GPSLabMapStyleHybrid];
+    CHECK([gStore loadMapStyle] == GPSLabMapStyleHybrid, @"hybrid persists");
+    [gStore saveMapStyle:GPSLabMapStyleSatellite];
+    CHECK([gStore loadMapStyle] == GPSLabMapStyleSatellite, @"satellite persists");
+
+    // Invalid stored values resolve to Satellite (wrong type / boolean / out-of-range).
+    [gDefaults setInteger:99 forKey:@"GPSLab.mapStyle"];
+    [gDefaults synchronize];
+    CHECK([gStore loadMapStyle] == GPSLabMapStyleSatellite, @"out-of-range style falls back to satellite");
+    [gDefaults setInteger:-1 forKey:@"GPSLab.mapStyle"];
+    [gDefaults synchronize];
+    CHECK([gStore loadMapStyle] == GPSLabMapStyleSatellite, @"negative style falls back to satellite");
+    [gDefaults setObject:@"hybrid" forKey:@"GPSLab.mapStyle"];
+    [gDefaults synchronize];
+    CHECK([gStore loadMapStyle] == GPSLabMapStyleSatellite, @"non-numeric style falls back to satellite");
+    [gDefaults setBool:NO forKey:@"GPSLab.mapStyle"];
+    [gDefaults synchronize];
+    CHECK([gStore loadMapStyle] == GPSLabMapStyleSatellite, @"boolean style falls back to satellite");
+
+    // An out-of-range save never stores a value outside the three styles.
+    [gStore saveMapStyle:(GPSLabMapStyle)42];
+    CHECK([gStore loadMapStyle] == GPSLabMapStyleSatellite, @"out-of-range save stores satellite");
+
+    // The preference is independent of the configuration/profile schema.
+    [gStore saveMapStyle:GPSLabMapStyleHybrid];
+    GPSLabConfiguration *configuration = [gStore loadConfiguration];
+    CHECK(![[configuration dictionaryRepresentation].allKeys containsObject:@"mapStyle"],
+          @"the map style is not part of the persisted configuration");
+
+    endStore();
+}
+
 int main(void) {
     @autoreleasepool {
         test_pending_roundtrip();
@@ -590,6 +634,7 @@ int main(void) {
         test_concurrent_duplicate_insert();
         test_reopen_keep_last_independent();
         test_drift_config_backward_compatible();
+        test_map_style_preference();
 
         if (gFailures != 0) {
             fprintf(stderr, "%d/%d checks failed\n", gFailures, gChecks);

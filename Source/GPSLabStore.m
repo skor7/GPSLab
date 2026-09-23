@@ -26,6 +26,9 @@ static NSString * const kGPSLabKeyPendingSelection = @"GPSLab.pendingSelection";
 // The committed-selection receipt stores the coordinate (not a boolean) so a
 // stale nonzero receipt can never authorize a later reset-to-(0,0).
 static NSString * const kGPSLabKeyCommittedSelection = @"GPSLab.committedSelection";
+// A persisted UI preference (foreground map style); never part of the profile
+// schema or the synthetic configuration.
+static NSString * const kGPSLabKeyMapStyle = @"GPSLab.mapStyle";
 
 static NSString * const kGPSLabBookmarkName = @"name";
 static NSString * const kGPSLabBookmarkLatitude = @"latitude";
@@ -302,6 +305,33 @@ static NSString *GPSLabStoreValidatedProvider(id value) {
         [dictionary removeObjectForKey:kGPSLabKeyHeading];
         [_defaults setObject:dictionary forKey:kGPSLabKeyConfiguration];
     }
+    os_unfair_lock_unlock(&_lock);
+}
+
+#pragma mark - Map style preference
+
+- (GPSLabMapStyle)loadMapStyle {
+    os_unfair_lock_lock(&_lock);
+    id stored = [_defaults objectForKey:kGPSLabKeyMapStyle];
+    os_unfair_lock_unlock(&_lock);
+
+    // Missing/invalid (wrong type, boolean, or out-of-range) falls back to Satellite.
+    if (![stored isKindOfClass:[NSNumber class]] || GPSLabStoreIsBooleanNumber(stored)) {
+        return GPSLabMapStyleSatellite;
+    }
+    NSInteger raw = [stored integerValue];
+    if (raw < GPSLabMapStyleStandard || raw > GPSLabMapStyleSatellite) {
+        return GPSLabMapStyleSatellite;
+    }
+    return (GPSLabMapStyle)raw;
+}
+
+- (void)saveMapStyle:(GPSLabMapStyle)style {
+    GPSLabMapStyle sanitized = (style >= GPSLabMapStyleStandard && style <= GPSLabMapStyleSatellite)
+        ? style
+        : GPSLabMapStyleSatellite;
+    os_unfair_lock_lock(&_lock);
+    [_defaults setInteger:(NSInteger)sanitized forKey:kGPSLabKeyMapStyle];
     os_unfair_lock_unlock(&_lock);
 }
 

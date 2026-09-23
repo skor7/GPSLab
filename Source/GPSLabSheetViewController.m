@@ -44,7 +44,7 @@ UINavigationController *GPSLabSheetNavigationController(UIViewController *root) 
 
 #pragma mark - Form base
 
-@interface GPSLabSheetViewController ()
+@interface GPSLabSheetViewController () <UITextFieldDelegate, UIGestureRecognizerDelegate>
 @property (nonatomic, strong) UIStackView *stack;
 @end
 
@@ -96,6 +96,15 @@ UINavigationController *GPSLabSheetNavigationController(UIViewController *root) 
 
     self.stack = stack;
 
+    // A background tap dismisses the keyboard WITHOUT blocking controls: it does
+    // not cancel touches, and it ignores any touch that lands on a UIControl
+    // (switch, text field, button) so focusing a field never bounces the keyboard.
+    UITapGestureRecognizer *backgroundTap =
+        [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(gpslab_backgroundTapped:)];
+    backgroundTap.cancelsTouchesInView = NO;
+    backgroundTap.delegate = self;
+    [self.view addGestureRecognizer:backgroundTap];
+
     [self gpslab_applyLocalization];
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(gpslab_languageDidChange:)
@@ -118,6 +127,61 @@ UINavigationController *GPSLabSheetNavigationController(UIViewController *root) 
 
 - (UIStackView *)contentStack {
     return self.stack;
+}
+
+#pragma mark - Keyboard
+
+// Scoped to a real dismissal so a push/cover in the same navigation controller is
+// never treated as a dismissal.
+- (void)viewWillDisappear:(BOOL)animated {
+    [super viewWillDisappear:animated];
+    if (self.isBeingDismissed || self.navigationController.isBeingDismissed) {
+        [self.view endEditing:YES];
+    }
+}
+
+- (void)gpslab_backgroundTapped:(UITapGestureRecognizer *)recognizer {
+    (void)recognizer;
+    [self.view endEditing:YES];
+}
+
+- (void)gpslab_endEditingFromAccessory {
+    [self.view endEditing:YES];
+}
+
+/** Centralized, localized Done accessory shared by every decimal field. */
+- (UIView *)gpslab_decimalAccessoryView {
+    UIToolbar *toolbar = [[UIToolbar alloc] initWithFrame:CGRectMake(0.0, 0.0, 0.0, 44.0)];
+    toolbar.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    UIBarButtonItem *flexible = [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemFlexibleSpace
+                                                                             target:nil
+                                                                             action:nil];
+    UIBarButtonItem *done = [[UIBarButtonItem alloc] initWithTitle:GPSLabLocalized(@"common.done")
+                                                            style:UIBarButtonItemStyleDone
+                                                           target:self
+                                                           action:@selector(gpslab_endEditingFromAccessory)];
+    toolbar.items = @[ flexible, done ];
+    [toolbar sizeToFit];
+    return toolbar;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    (void)gestureRecognizer;
+    UIView *candidate = touch.view;
+    while (candidate != nil) {
+        if ([candidate isKindOfClass:[UIControl class]]) {
+            return NO;
+        }
+        candidate = candidate.superview;
+    }
+    return YES;
+}
+
+#pragma mark - UITextFieldDelegate
+
+- (BOOL)textFieldShouldReturn:(UITextField *)textField {
+    [textField resignFirstResponder];
+    return YES;
 }
 
 #pragma mark - Helpers
@@ -173,6 +237,10 @@ UINavigationController *GPSLabSheetNavigationController(UIViewController *root) 
     field.autocorrectionType = UITextAutocorrectionTypeNo;
     field.autocapitalizationType = UITextAutocapitalizationTypeNone;
     field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    // Centralized: every decimal field gets the localized Done accessory and the
+    // shared Return-to-dismiss delegate (subclasses may override the delegate).
+    field.delegate = self;
+    field.inputAccessoryView = [self gpslab_decimalAccessoryView];
     // Numeric fields stay LTR so digits/signs are never reordered by RTL.
     [GPSLabLocalization forceLeftToRight:field];
     return field;
