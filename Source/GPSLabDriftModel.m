@@ -46,9 +46,11 @@ static double GPSLabRandomUnitDefault(void);
 - (instancetype)initWithRandomUnitProvider:(nullable GPSLabDriftRandomUnitProvider)provider {
     self = [super init];
     if (self) {
-        _randomSource = provider != nil
-            ? [provider copy]
-            : ^double(void) { return GPSLabRandomUnitDefault(); };
+        if (provider != nil) {
+            _randomSource = [provider copy];
+        } else {
+            _randomSource = ^double(void) { return GPSLabRandomUnitDefault(); };
+        }
         _northMeters = 0.0;
         _eastMeters = 0.0;
         _headingRadians = 0.0;
@@ -63,9 +65,11 @@ static double GPSLabRandomUnitDefault(void);
 }
 
 - (void)setRandomUnitProvider:(nullable GPSLabDriftRandomUnitProvider)randomUnitProvider {
-    _randomSource = randomUnitProvider != nil
-        ? [randomUnitProvider copy]
-        : ^double(void) { return GPSLabRandomUnitDefault(); };
+    if (randomUnitProvider != nil) {
+        _randomSource = [randomUnitProvider copy];
+    } else {
+        _randomSource = ^double(void) { return GPSLabRandomUnitDefault(); };
+    }
 }
 
 - (double)randomInRangeMin:(double)minValue max:(double)maxValue {
