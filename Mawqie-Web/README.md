@@ -228,10 +228,12 @@ registered only outside production; production exposes the provider-neutral
 
 ## Integration limitations and compatibility gap
 
-- **There is no license backend in the GPSLab repository.** The GPSLab README
-  states plainly that no production endpoint, verification key, sign-in provider
-  or payment backend exists. Therefore compatibility with any external license
-  backend **cannot be claimed or proven**.
+- **There is no license backend in the GPSLab repository.** GPSLab itself ships
+  only public configuration: a production endpoint and public P-256 verification
+  key pinned in `Source/GPSLabLicenseBuildConfig.h`. The signing backend, sign-in
+  provider and payment provider live in the separate `GPSLab-License-Server`
+  deployment. Compatibility with any external license backend therefore **cannot be
+  claimed or proven** from this repository alone.
 - `LICENSE_MODE=remote` routes to `src/licensing/adapter.js`. It speaks the
   documented `{installationId, refreshToken?, activationCode?}` issuance contract,
   an explicit `{action:"revoke", licenseId, ...}` revocation contract, and it

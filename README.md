@@ -281,12 +281,17 @@ GPSLab is fail-closed: the synthetic engine never runs without a verified entitl
 Resolution order: **GPSLab build-time macros** (`Source/GPSLabLicenseBuildConfig.h`,
 generated at package time, or `-DGPSLAB_LICENSE_BUILD_*` flags) override the host
 Info.plist, which overrides empty defaults. This lets one GPSLab build carry its own
-public configuration without editing the host app; the header ships empty and contains
-no private key.
+public configuration without editing the host app; the header ships public values
+only (endpoint, verification key, issuer, audience) and never a private key.
 
 A verification public key is public material, not a secret; never ship a signing
-private key or a pre-baked token. With no endpoint or key, the app is locked and the
-subscription screen states plainly that the service is not configured in this build.
+private key or a pre-baked token. When no endpoint or key is resolved (a host that
+ships neither build macros nor Info.plist keys), the app is locked and the
+subscription screen states plainly that the service is not configured in that build.
+The canonical in-repo build is **not** unconfigured: `Source/GPSLabLicenseBuildConfig.h`
+ships a pinned production endpoint and public verification key (public material only);
+the matching signing private key is kept server-side (see
+[Production setup](#production-setup)).
 
 ### Wire contract
 
@@ -393,12 +398,45 @@ origin (`/account`, `/account/login`, `/account/pair`, `/help`,
 `GPSLAB_LICENSE_BUILD_*` macros or the `GPSLab*URL` Info.plist keys. On app return the
 existing foreground reconcile still runs; the portal shows an explicit refresh status.
 
-### Production setup (blocker)
+### Production setup
 
-There is no production endpoint, verification key, sign-in provider or payment backend
-in this repository, and runtime behavior can only be verified by CI plus device
-testing. Until a host app configures the keys above and a real signing backend exists,
-the license stays locked — by design.
+This repository contains the **public** half of the license configuration only. The
+canonical build pins it in `Source/GPSLabLicenseBuildConfig.h` (compiled into
+`GPSLab.dylib`): the endpoint
+`https://vps-6f128567.vps.ovh.net:8443/api/v1/license/check`, the exact 91-byte P-256
+SubjectPublicKeyInfo base64 verification key, issuer `GPSLab` and audience
+`GPSLab-iOS`. The pinned endpoint and verification key are public material that is
+**intentionally shipped**; neither is a secret.
+
+The production **signing private key** and the refresh-token HMAC secret are kept
+server-side by the sibling `GPSLab-License-Server` deployment: mounted read-only
+(`secrets/signing-key.pem`, generated under `.secrets/`), never baked into an image,
+never in this repository and never in the dylib. The License-Server ships a working
+first-party customer account portal—signup, sign-in and session handling run entirely
+on the backend—while only the optional **external** seams are disabled: the third-party
+identity provider and the real payment-gateway integration return `404 not_configured`
+until an operator configures one, so that part of the setup stays fail-closed. Plans and
+trial approvals are handled manually by an admin and work without either external seam.
+
+A production rollout is therefore an operator action on the backend, not a source
+change here. Before rollout the operator must:
+
+1. Deploy the current `GPSLab-License-Server` commit, run its forward-only migrations
+   (including the customer-portal migration) and confirm the edge serves the new admin
+   SPA and the account/device routes.
+2. Verify the server's public SPKI **fingerprint** matches this binary's pinned
+   `GPSLAB_LICENSE_BUILD_PUBLIC_KEY` **before** any rollout — compare the
+   `npm run keys:show` output with the header value; a mismatch means devices reject
+   every envelope.
+3. **Preserve the existing signing key** so already-activated subscribers keep
+   validating; replacing it is a coordinated break-glass action (see the server's key
+   rotation doc), not part of a routine deploy.
+4. Never put a signing private key, HMAC secret or password in source, a build flag or
+   an Info.plist.
+
+Runtime behavior can only be verified by CI plus device testing; CI proves the binary
+contract, not a live backend. The exact wire contract and the full operator runbook
+live in the sibling repository (`docs/DEPLOYMENT.md`, `docs/GPSLAB_INTEGRATION.md`).
 
 ## Keychain compatibility (embedded KeychainFix behaviour)
 
