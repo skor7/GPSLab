@@ -423,3 +423,22 @@ jobs:
       - name: Run fixture-based reporter tests
         shell: bash
         run: python3 tests/test_ci_production_report.py
+
+  keychain-compat-wiring-tests:
+    name: Integrated Keychain compatibility hook (portable C + Python, source-validated)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run keychain compatibility wiring assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_keychain_compat_test.c \
+            -o /tmp/gpslab_keychain_compat_test
+          /tmp/gpslab_keychain_compat_test
+
+      - name: Run keychain integration assertions (verified-builder equivalence, hardening, literal policy)
+        shell: bash
+        run: python3 tests/test_keychain_integration.py

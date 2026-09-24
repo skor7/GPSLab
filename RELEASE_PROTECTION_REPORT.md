@@ -33,8 +33,10 @@ runs the same audit gate.
 | `tests/test_ci_production_report.py` | **New.** Fixture-based tests for the reporter: synthetic DEV/PRODUCTION audits plus a synthetic binary whose SHA-256 is computed by the test. Asserts the Markdown/JSON surface the real exported counts, full hashes, size and commit (no fabricated metrics), and that the gate fails closed on SHA mismatch, a banned dependency, an embedded secret, a binary leak, a failing sensitive-string audit and a missing audit script. |
 | `RELEASE_PROTECTION_REPORT.md` | This report (tracked baseline). The **CI-updated** copy is generated per run as the `RELEASE_PROTECTION_REPORT.ci.md` artifact by appending a CI-verified section to this baseline; it is gitignored and never committed. |
 
-No `Source/` file was changed. No KeychainFix file was changed. Nothing was
-staged, committed or pushed.
+At the time of this Deliverable A audit, no `Source/` file was changed and no
+KeychainFix file was changed. Nothing was staged, committed or pushed. (A later,
+separate task integrated the KeychainFix hook into `Source/` — see **§11**; the
+findings in §1–§10 remain the historical audit baseline for their scope.)
 
 ### Build modes (explicit selector)
 - **DEV (default)** — `make`. Theos' debug schema is kept (`DEBUG=1`), so the
@@ -316,4 +318,88 @@ build is never blocked by KeychainFix. On success it uploads a
 `KeychainFix-production-dylib` artifact containing `KeychainFix-Release.dylib`,
 and a `KeychainFix-production-report` JSON with the real before/after hash, size
 and symbol counts.
+
+---
+
+## 11. Integrated KeychainFix behaviour into GPSLab.dylib (2026-09-24)
+
+New requirement: **one `GPSLab.dylib` must include the behaviour of the
+on-device-verified standalone KeychainFix.** This section is additive; the audit
+findings in §1–§10 remain valid for their scope.
+
+### 11.1 Changes applied
+
+| File | Purpose |
+| --- | --- |
+| `Source/fishhook.c`, `Source/fishhook.h` | **New.** Vendored **verbatim** from facebook/fishhook (BSD-3 licence text preserved in the files). The CRLF-normalized SHA-256 matches the builder's pinned contract exactly: `fishhook.h = 5432b81b…620120`, `fishhook.c = 48f51e1a…9b61b`. |
+| `Source/GPSLabKeychainCompat.m`, `Source/GPSLabKeychainCompat.h` | **New.** Near-verbatim port of the builder's `KeychainFix.m`: C rebinding of `SecItemCopyMatching`/`Add`/`Update`/`Delete`, `kSecAttrAccessGroup` stripped from a +1 copy, original `OSStatus` returned unchanged, caller dictionaries never mutated. Adds a **hidden, idempotent (`dispatch_once`) explicit install** (`GPSLabKeychainCompatInstall`) that returns whether the rebinding succeeded. |
+| `Source/dylib_init.m` | Installs the hook **before** the license manager performs any Keychain access; no other constructor ordering changed. |
+| `Makefile` | Compiles both new sources; `Security.framework` was already linked. Header comment corrected (no third-party injection framework; vendored BSD-3 fishhook). |
+| `tests/gpslab_keychain_compat_test.c` | **New.** Portable-C source-validated wiring test (50 assertions): provenance/licence, hidden API, all four rebinds, copy-only access-group stripping, balanced CoreFoundation ownership, idempotent hidden install, **unconditional** semantics (no engine/license gate), constructor ordering and Makefile wiring. |
+| `scripts/validate.sh` | New "Integrated Keychain compatibility hook" gate: compiled wiring, licence/hidden, un-gated semantics, ordering before `loadAndStart`, Security linkage and CI wiring. |
+| `.github/workflows/tests.yml` | New `keychain-compat-wiring-tests` job that compiles and runs the wiring test (portable C, ubuntu). |
+| `README.md` | Replaced the inaccurate clean-room claims with a precise **provenance** statement; documented the embedded hook and that the original standalone artifact/builder remain preserved. |
+| `RELEASE_PROTECTION_REPORT.md` | This section. |
+
+**No other Keychain logic changed and no check was weakened.**
+`Source/GPSLabSecureStore.m`, `Source/GPSLabLicenseManager.m`, the token verifier
+and the entitlement gate are untouched, and the hook is deliberately **not** gated
+by the engine switch or the license state (identical to the verified standalone
+artifact).
+
+### 11.2 Immutable standalone artifacts preserved (unchanged)
+
+| Artifact | SHA-256 / state |
+| --- | --- |
+| `E:\Project\KeychainFix-Builder\output\KeychainFix.dylib` | `8bbcda98136b77b8cc11c1d7f001b337c9fe2127e3e30000969089508ee7fd1d` (as required) |
+| `…\output\KeychainFix.dylib.bak-20260924-044037` | untouched (67 792 B) |
+| `E:\Project\GPSLab\KeychainFix.dylib` (read-only copy) | same `8bbcda98…` hash, untouched |
+| sibling `KeychainFix-Builder` sources (`KeychainFix.m`, `fishhook.*`, `tests/verify.ps1`) | untouched |
+
+The standalone release script/workflow at `HEAD` was not removed. The corrected
+provenance note in §1 and this section are the only places that reference the
+builder; the release script itself still consumes an already-built binary and
+never reads the builder.
+
+### 11.3 Static verification (this host: Windows 10 + WSL2 Ubuntu 24.04, gcc 13.3)
+
+| Command | Result |
+| --- | --- |
+| `bash scripts/validate.sh` | **PASS** (includes the new integrated-hook gate) |
+| `bash scripts/audit_build_modes.sh` | **PASS** (dev readable; production hardened) |
+| `bash scripts/release_protection.sh` | **PASS** (static; no dylib supplied) |
+| `cc -I Source tests/gpslab_keychain_compat_test.c && ./…` | **PASS** (50/50) |
+| `python3 tests/test_ci_production_report.py` | **PASS** (9/9) |
+| vendored fishhook normalized SHA-256 | **MATCHES** the builder's pinned contract |
+
+### 11.4 Build + runtime: NOT MEASURED (exact blocker)
+
+The integrated dylib **could not be built on this host**. There is no macOS, no
+Xcode/iOS SDK, no Theos, no `xcrun` and no `clang` for arm64/iOS. Running
+`make MODE=production` (or `MODE=dev`) fails at the Theos include:
+
+```
+Makefile:108: /library.mk: No such file or directory
+make: *** No rule to make target '/library.mk'.  Stop.
+```
+
+`$(THEOS)` is unset and no iOS `clang` exists on the host or in WSL. CI on
+`macos-latest` (`build.yml`) performs the production build and Mach-O gate. The
+hook's on-device behaviour is proven only by the original standalone artifact and
+remains **NOT VERIFIED** for this integrated build until it is run on a device.
+
+### 11.5 Canceled standalone-only edits (isolated, recoverable, not integrated)
+
+The canceled standalone-only edits (unrelated to this integration) are parked in a
+single stash and are **not** part of the integrated changes:
+
+- stash: `stash@{0}` — commit `37d60e79abb97485b8ec024aedcbe6455cd570eb`,
+  message `canceled-standalone-keychainfix-edits-20260924`
+- files: `scripts/keychainfix_release.sh`,
+  `.github/workflows/keychainfix-release.yml`, `.github/workflows/tests.yml`,
+  `README.md`, `RELEASE_PROTECTION_REPORT.md`
+- the untracked `tests/test_keychainfix_release.py` was left untouched and is not
+  part of the integrated commit.
+
+Nothing was staged, committed or pushed by this integration.
 

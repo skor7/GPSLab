@@ -1,24 +1,35 @@
 # GPSLab
 
-`GPSLab` is a clean-room Objective-C dylib that provides a deterministic, synthetic
+`GPSLab` is an Objective-C dylib that provides a deterministic, synthetic
 CoreLocation stream for **authorized testing on devices you own** (for example, QA
 builds that need a fixed or simulated coordinate without touching real location
 hardware). It ships a floating, gesture-activated overlay so the synthetic state can
-be configured from inside the host app.
+be configured from inside the host app. It also embeds the behaviour of the
+operator's on-device-verified standalone KeychainFix (see
+[Keychain compatibility](#keychain-compatibility-embedded-keychainfix-behaviour)).
 
 > Intended exclusively for testing in environments you are authorized to modify.
 > Do not use it to deceive users or violate any service's terms.
 
-## Clean-room statement
+## Provenance statement
 
-- Written from scratch against Apple's public headers, the Objective-C runtime
-  documentation (`<objc/runtime.h>`), CoreLocation, UIKit and MapKit.
-- No source code was copied from, or derived from, any existing tweak or location
-  spoofing project.
-- It does not link or load any hooking framework (no Substrate, ElleKit, or
-  libhooker). Method interception uses only the public Objective-C runtime
+- The CoreLocation / overlay / license implementation is written from scratch
+  against Apple's public headers, the Objective-C runtime documentation
+  (`<objc/runtime.h>`), CoreLocation, UIKit, MapKit and Security.framework.
+- It does not link or load any third-party injection framework. CoreLocation
+  method interception uses only the public Objective-C runtime
   (`class_getInstanceMethod`, `class_replaceMethod`, ...).
-- No private frameworks, no `dlopen`/`dlsym`, no external package dependencies.
+- The Keychain access-group hook is the single ported component: it is a
+  near-verbatim, in-process port of the operator's own standalone
+  `KeychainFix`, which was verified on-device (C rebinding of
+  `SecItemCopyMatching`/`Add`/`Update`/`Delete` that strips `kSecAttrAccessGroup`
+  from a copy and returns the original status unchanged).
+- `Source/fishhook.c` and `Source/fishhook.h` are vendored **verbatim** from
+  facebook/fishhook under its BSD-3 licence (the licence text is kept in the
+  files). This is vendored source, not a package-manager dependency: there is no
+  `Podfile`/`Package.swift`/git submodule fetching code at build time.
+- No private frameworks, no `dlopen`/`dlsym` (fishhook uses `dladdr` and the dyld
+  image APIs), and no external package dependencies.
 
 ## Requirements
 
@@ -84,17 +95,22 @@ never be mistaken for a release. Build-time identifier/string hygiene
 obfuscation is intentionally **not** implemented: it would require modifying or
 post-processing the readable canonical source, which is out of scope.
 
-The separate KeychainFix release is intentionally **not** part of this build. It
-is an optional workflow (`.github/workflows/keychainfix-release.yml`) that
-consumes an already-verified `KeychainFix.dylib` supplied as a **same-repository
-artifact**, and **only when this repository is private** (artifacts of a public
-repository are public, so it refuses to download-and-publish there). It never
-downloads from a public URL or file host and never blocks the GPSLab build. When
-no input is supplied it is a no-op (`BLOCKED_BY_MISSING_INPUT`) and the operator
-runs `scripts/keychainfix_release.sh` locally on macOS instead. On success it
-uploads a `KeychainFix-production-dylib` artifact containing
-`KeychainFix-Release.dylib`, plus a `KeychainFix-production-report` JSON with the
-real before/after hash, size and symbol counts.
+The separate standalone KeychainFix **release pipeline** is independent of this
+build. GPSLab itself already embeds the same hook behaviour (see
+[Keychain compatibility](#keychain-compatibility-embedded-keychainfix-behaviour)),
+while the optional workflow (`.github/workflows/keychainfix-release.yml`) still
+consumes a separately supplied, already-verified `KeychainFix.dylib` supplied as a
+**same-repository artifact**, and **only when this repository is private**
+(artifacts of a public repository are public, so it refuses to download-and-publish
+there). It never downloads from a public URL or file host and never blocks the
+GPSLab build. When no input is supplied it is a no-op
+(`BLOCKED_BY_MISSING_INPUT`) and the operator runs `scripts/keychainfix_release.sh`
+locally on macOS instead. On success it uploads a `KeychainFix-production-dylib`
+artifact containing `KeychainFix-Release.dylib`, plus a
+`KeychainFix-production-report` JSON with the real before/after hash, size and
+symbol counts. The immutable standalone `KeychainFix.dylib`, its timestamped
+`.bak-*` copy and the sibling `KeychainFix-Builder` sources are never rebuilt or
+modified by this repository.
 
 Then:
 
@@ -128,6 +144,7 @@ GPSLabRuntime              lifecycle coordinator (scene/window/foreground/backgr
        ├─ GPSLabRouteViewController         mode / speed / endpoints / playback
        ├─ GPSLabOptionsViewController       keep-last, map style, real-location
        └─ GPSLabSearchResultsViewController MKLocalSearch results (stale-guarded)
+GPSLabKeychainCompat       process-wide Keychain access-group hook (ported KeychainFix + vendored fishhook)
 GPSLabLicenseManager       fail-closed entitlement coordinator (engine gate + states)
   ├─ GPSLabLicensePolicy   pure-C bounded state/time/rollback policy (shared with tests)
   ├─ GPSLabLicenseConfig   macros -> Info.plist -> EMPTY (independent build config)
@@ -353,6 +370,25 @@ in this repository, and runtime behavior can only be verified by CI plus device
 testing. Until a host app configures the keys above and a real signing backend exists,
 the license stays locked — by design.
 
+## Keychain compatibility (embedded KeychainFix behaviour)
+
+`GPSLab.dylib` ships the behaviour of the operator's standalone, on-device-verified
+`KeychainFix.dylib` in-process:
+
+- The dylib constructor installs a process-wide hook **before** the license manager
+  performs any Keychain access (`GPSLabKeychainCompatInstall`).
+- Vendored fishhook rebinds `SecItemCopyMatching`, `SecItemAdd`, `SecItemUpdate` and
+  `SecItemDelete` for every loaded image. Each query/attribute dictionary has
+  `kSecAttrAccessGroup` removed **from a copy**, so the caller's dictionary is never
+  mutated and the original `OSStatus` is returned unchanged.
+- The install is explicit, hidden and idempotent (`dispatch_once`); the entry point
+  is not part of any exported C ABI.
+- The hook is deliberately **unconditional**: it is not gated by the master switch,
+  the license state or any profile, matching the standalone artifact exactly.
+- The original standalone `KeychainFix.dylib`, its timestamped `.bak-*` copy and the
+  sibling `KeychainFix-Builder` sources are preserved unchanged; nothing in this
+  repository rebuilds or modifies them.
+
 ## Known limitations
 
 - `arm64` / iOS 16.0+ only. Verified by the static checks and the CI Mach-O checks.
@@ -360,6 +396,9 @@ the license stays locked — by design.
 - SwiftUI `Map` / `liveUpdates` is out of reach of this hook set: those APIs read
   from the same `CLLocationManager` but bypass the delegate callbacks in some code
   paths. Non-SwiftUI CoreLocation consumers are covered.
+- The embedded Keychain hook is process-wide and unconditional (exactly like the
+  standalone KeychainFix); it is not scoped to GPSLab's own stores, and the on-device
+  hook behaviour is verified only by the original standalone artifact, not by CI.
 - Runtime behavior (overlay rendering, MapKit tiles, hook delivery) can only be
   validated on a real device or a signed IPA; CI proves the binary contract only.
 

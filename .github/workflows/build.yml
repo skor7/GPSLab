@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   static:
-    name: Static validation (clean-room, ARC, Makefile)
+    name: Static validation (provenance, ARC, Makefile)
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout

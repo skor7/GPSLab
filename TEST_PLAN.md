@@ -25,7 +25,10 @@ Expected: exits 0 and prints "All GPSLab static checks passed."
 
 Covers: Makefile arch/target/ARC/frameworks/install path, every `.m` compiled,
 no hooking-framework references, no private frameworks, no `dlopen`/`dlsym`, no
-Swift, no manual `retain/release`, diagnostics never receive coordinates.
+Swift, no manual `retain/release`, diagnostics never receive coordinates, and the
+integrated Keychain compatibility hook (vendored fishhook; copy-only
+`kSecAttrAccessGroup` stripping; hidden, idempotent install ordered before the
+license manager).
 
 ## 2. CI build contract (automated)
 
@@ -55,6 +58,7 @@ Legend: **[Clean]** = injected into a freshly installed IPA never previously tes
 | 3.1.1 | [Clean] Install injected IPA, launch app. | App launches normally; `os_log` shows "GPSLab dylib loaded" and a hook count. |
 | 3.1.2 | [Re-tested] Reinstall over a previously injected IPA. | Same as above with exactly one hook-install event; no duplicate swizzling. |
 | 3.1.3 | Launch with the overlay never opened. | Host app is unaffected; no overlay visible; host gestures work. |
+| 3.1.4 | [Clean] Exercise a host/license Keychain operation that previously failed with `-34018`/access-group error. | The operation succeeds with no access-group error: the integrated KeychainFix hook is active in-process (process-wide and unconditional). |
 
 ### 3.2 Overlay activation and dismissal
 

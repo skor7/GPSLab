@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # GPSLab static validation.
 #
-# Runs without any iOS SDK or Apple toolchain. It enforces the clean-room and
-# configuration invariants that would otherwise only fail at build/install time:
+# Runs without any iOS SDK or Apple toolchain. It enforces the provenance,
+# dependency and configuration invariants that would otherwise only fail at
+# build/install time:
 #   * every source file is listed in the Makefile;
 #   * banned hooking frameworks/dependencies never appear in source;
 #   * private Apple frameworks are never imported/linked;
@@ -134,8 +135,8 @@ if grep -r -n -E 'course:[[:space:]]*NULL' "$SOURCE_DIR" >/dev/null 2>&1; then
 fi
 pass "no NULL passed to currentCoordinate:course:"
 
-# ------------------------------------------------------------- Clean-room -----
-echo "== Clean-room / dependency bans =="
+# ------------------------------------------------------- Dependency bans -----
+echo "== Dependency / private-framework bans =="
 BANNED='substrate|ellekit|libhooker|cydia'
 if grep -r -n -i -E "$BANNED" "$SOURCE_DIR" "$MAKEFILE" >/dev/null 2>&1; then
     grep -r -n -i -E "$BANNED" "$SOURCE_DIR" "$MAKEFILE" >&2 || true
@@ -1128,5 +1129,79 @@ fi
 grep -q -F "gpslab_protected_strings_test.c" "$ROOT/.github/workflows/tests.yml" \
     || fail "the protected-string test must be run by the tests workflow"
 pass "protected client literals are manifest-driven, compiled and tested"
+
+# ------------------------- Integrated Keychain compatibility (KeychainFix) ------
+echo "== Integrated Keychain compatibility hook =="
+KC_H="$SOURCE_DIR/GPSLabKeychainCompat.h"
+KC_M="$SOURCE_DIR/GPSLabKeychainCompat.m"
+FISHHOOK_C="$SOURCE_DIR/fishhook.c"
+FISHHOOK_H="$SOURCE_DIR/fishhook.h"
+[[ -f "$KC_H" ]] || fail "GPSLabKeychainCompat.h missing"
+[[ -f "$KC_M" ]] || fail "GPSLabKeychainCompat.m missing"
+[[ -f "$FISHHOOK_C" ]] || fail "vendored Source/fishhook.c missing"
+[[ -f "$FISHHOOK_H" ]] || fail "vendored Source/fishhook.h missing"
+grep -q -F "Source/fishhook.c" "$MAKEFILE" \
+    || fail "the vendored fishhook must be compiled by the Makefile"
+grep -q -F "Source/GPSLabKeychainCompat.m" "$MAKEFILE" \
+    || fail "the Keychain compatibility hook must be compiled by the Makefile"
+# Vendored fishhook: BSD-3 notice preserved and API hidden (no exported C ABI).
+grep -q -F "Copyright (c) 2013, Facebook, Inc." "$FISHHOOK_H" \
+    || fail "the vendored fishhook must keep its upstream BSD-3 notice"
+grep -q -F 'FISHHOOK_VISIBILITY __attribute__((visibility("hidden")))' "$FISHHOOK_H" \
+    || fail "the vendored fishhook API must stay hidden"
+# Ported hook: all four rebinds, kSecAttrAccessGroup stripped from a +1 copy.
+for symbol in orig_SecItemCopyMatching orig_SecItemAdd orig_SecItemUpdate orig_SecItemDelete \
+    my_SecItemCopyMatching my_SecItemAdd my_SecItemUpdate my_SecItemDelete; do
+    grep -q -F "$symbol" "$KC_M" || fail "missing keychain hook symbol: $symbol"
+done
+grep -q -F "removeObjectForKey:(__bridge id)kSecAttrAccessGroup" "$KC_M" \
+    || fail "the keychain hook must strip kSecAttrAccessGroup"
+grep -q -F "return CFBridgingRetain(mutableDict);" "$KC_M" \
+    || fail "the keychain hook must clean and return a +1 copy"
+grep -q -F 'visibility("hidden")' "$KC_M" \
+    || fail "the keychain install entry point must be hidden"
+grep -q -F "dispatch_once(&gGPSLabKeychainCompatOnce" "$KC_M" \
+    || fail "the keychain hook install must be exactly-once (idempotent)"
+# Semantics stay UNCONDITIONAL: never gated by the engine or the entitlement.
+for token in setEnabled isEnabled sharedEngine GPSLabLicenseManager GPSLabEngine entitlementAllowsSynthesis; do
+    if grep -q -F "$token" "$KC_M"; then
+        fail "the keychain hook must never be gated by engine/license state ($token)"
+    fi
+done
+# Installed before the license manager performs any Keychain access.
+grep -q -F '#import "GPSLabKeychainCompat.h"' "$SOURCE_DIR/dylib_init.m" \
+    || fail "the dylib constructor must import the keychain hook"
+grep -q -F "GPSLabKeychainCompatInstall()" "$SOURCE_DIR/dylib_init.m" \
+    || fail "the dylib constructor must install the keychain hook"
+if ! awk '/GPSLabKeychainCompatInstall\(\)/ { i = NR } /loadAndStart\]/ { j = NR } END { exit !(i && j && i < j) }' \
+    "$SOURCE_DIR/dylib_init.m"; then
+    fail "the keychain hook must be installed before the license manager starts"
+fi
+grep -q -F "Security" "$MAKEFILE" || fail "the Makefile must link Security.framework"
+# The two new sources take part in the SAME hardening as every other source:
+# the single build target must not grant them a per-file flag exemption.
+for token in fishhook_CFLAGS fishhook_LDFLAGS GPSLabKeychainCompat_CFLAGS GPSLabKeychainCompat_LDFLAGS; do
+    if grep -q -F "$token" "$MAKEFILE"; then
+        fail "no source may opt out of the shared mode flags ($token)"
+    fi
+done
+if grep -q -F -- "-fvisibility=default" "$MAKEFILE" "$ROOT/scripts/build_mode.mk"; then
+    fail "hidden visibility must not be reverted for any source"
+fi
+# Runtime-required symbol names and Security constants are never protected:
+# decoding them at runtime would change the fishhook rebinding contract.
+if grep -q -E 'SecItem|kSecAttrAccessGroup' "$ROOT/Source/GPSLabProtectedStrings.def"; then
+    fail "runtime-required Keychain symbol names/constants must never be protected"
+fi
+[[ -f "$ROOT/tests/gpslab_keychain_compat_test.c" ]] \
+    || fail "keychain compatibility test missing: tests/gpslab_keychain_compat_test.c"
+grep -q -F "gpslab_keychain_compat_test.c" "$ROOT/.github/workflows/tests.yml" \
+    || fail "the keychain compatibility test must be run by the tests workflow"
+# The deeper provenance/hardening/literal checks live in the portable Python test.
+[[ -f "$ROOT/tests/test_keychain_integration.py" ]] \
+    || fail "keychain integration test missing: tests/test_keychain_integration.py"
+grep -q -F "test_keychain_integration.py" "$ROOT/.github/workflows/tests.yml" \
+    || fail "the keychain integration test must be run by the tests workflow"
+pass "integrated Keychain access-group hook is vendored, unconditional, idempotent and ordered"
 
 echo "All GPSLab static checks passed."

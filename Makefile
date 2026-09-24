@@ -1,5 +1,8 @@
-# GPSLab - clean-room injected dylib for authorized iOS testing only.
-# arm64 only, iOS 16.0+, ARC, no hooking frameworks, no external dependencies.
+# GPSLab - injected dylib for authorized iOS testing only.
+# arm64 only, iOS 16.0+, ARC. Method interception uses the public Objective-C
+# runtime; the Keychain access-group compatibility hook (a near-verbatim port of
+# the operator's standalone, on-device-verified KeychainFix) uses the vendored
+# BSD-3 fishhook (Source/fishhook.c). No third-party injection framework is used.
 
 ARCHS = arm64
 TARGET = iphone:clang:latest:16.0
@@ -72,6 +75,8 @@ GPSLab_FILES = \
 	Source/CoreLocationHooks.m \
 	Source/Diagnostics.m \
 	Source/GPSLabStatusLog.m \
+	Source/fishhook.c \
+	Source/GPSLabKeychainCompat.m \
 	Source/GPSLabLicenseConfig.m \
 	Source/GPSLabSecureStore.m \
 	Source/GPSLabTokenVerifier.m \
