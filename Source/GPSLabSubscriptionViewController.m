@@ -14,7 +14,9 @@
 #import "GPSLabLicenseConfig.h"
 #import "GPSLabLicenseManager.h"
 #import "GPSLabLocalization.h"
+#import "GPSLabModalCoordinator.h"
 #import "GPSLabOverlayPresenter.h"
+#import "GPSLabPortalViewController.h"
 
 @interface GPSLabSubscriptionViewController ()
 @property (nonatomic, strong) UILabel *statusLabel;
@@ -27,6 +29,7 @@
 @property (nonatomic, strong) UIButton *restoreButton;
 @property (nonatomic, strong) UIButton *tryAgainButton;
 @property (nonatomic, strong) UIButton *manageButton;
+@property (nonatomic, strong) UIButton *accountButton;
 @property (nonatomic, strong) UIButton *closeButton;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @end
@@ -83,6 +86,7 @@
     self.restoreButton = [self plainButtonWithTitle:@"" action:@selector(restoreTapped)];
     self.tryAgainButton = [self plainButtonWithTitle:@"" action:@selector(tryAgainTapped)];
     self.manageButton = [self plainButtonWithTitle:@"" action:@selector(manageTapped)];
+    self.accountButton = [self plainButtonWithTitle:@"" action:@selector(accountTapped)];
 
     self.feedbackLabel = [[UILabel alloc] initWithFrame:CGRectZero];
     self.feedbackLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
@@ -104,6 +108,7 @@
     [stack addArrangedSubview:self.restoreButton];
     [stack addArrangedSubview:self.tryAgainButton];
     [stack addArrangedSubview:self.manageButton];
+    [stack addArrangedSubview:self.accountButton];
     [stack addArrangedSubview:self.feedbackLabel];
     [stack addArrangedSubview:self.closeButton];
 
@@ -154,6 +159,7 @@
     [self.restoreButton setTitle:GPSLabLocalized(@"subscription.restore") forState:UIControlStateNormal];
     [self.tryAgainButton setTitle:GPSLabLocalized(@"subscription.tryAgain") forState:UIControlStateNormal];
     [self.manageButton setTitle:GPSLabLocalized(@"subscription.manage") forState:UIControlStateNormal];
+    [self.accountButton setTitle:GPSLabLocalized(@"subscription.account") forState:UIControlStateNormal];
     [self.closeButton setTitle:GPSLabLocalized(@"common.close") forState:UIControlStateNormal];
     self.codeField.placeholder = GPSLabLocalized(@"subscription.codePlaceholder");
     [GPSLabLocalization applyLanguageAttributesToView:self.view];
@@ -291,6 +297,13 @@
         [weakSelf setBusy:NO];
         [weakSelf refreshUI];
     }];
+}
+
+- (void)accountTapped {
+    // Account/support is always available, locked or unlocked: subscription,
+    // sign-in, manage/renew, trial pairing, help and in-app feedback.
+    GPSLabPortalViewController *portal = [[GPSLabPortalViewController alloc] init];
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:portal completion:nil];
 }
 
 - (void)closeTapped {

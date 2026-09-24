@@ -41,6 +41,7 @@
 #import "GPSLabModalCoordinator.h"
 #import "GPSLabOptionsViewController.h"
 #import "GPSLabOverlayPresenter.h"
+#import "GPSLabPortalViewController.h"
 #import "GPSLabProfile.h"
 #import "GPSLabProfileApplicationCoordinator.h"
 #import "GPSLabProfileFormViewController.h"
@@ -252,6 +253,9 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
 // Owns master-switch intents so a superseded/cancelled profile apply can never
 // roll back or mutate a newer switch change. The same object is unit-tested.
 @property (nonatomic, strong) GPSLabMasterIntentGuard *masterIntentGuard;
+
+/** Opens the account/support portal sheet (available while unlocked). */
+- (void)presentPortalSheet;
 
 @end
 
@@ -2420,7 +2424,19 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
             [strongSelf presentFluctuationSheet];
         }];
     };
+    options.accountHandler = ^{
+        GPSLabOverlayViewController *strongSelf = weakSelf;
+        if (strongSelf == nil) { return; }
+        [[GPSLabModalCoordinator sharedCoordinator] dismissTopmostAnimated:YES completion:^{
+            [strongSelf presentPortalSheet];
+        }];
+    };
     [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:options completion:nil];
+}
+
+- (void)presentPortalSheet {
+    GPSLabPortalViewController *portal = [[GPSLabPortalViewController alloc] init];
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:portal completion:nil];
 }
 
 #pragma mark - Coordinate application

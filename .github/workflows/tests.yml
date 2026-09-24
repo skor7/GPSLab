@@ -49,8 +49,57 @@ jobs:
             tests/GPSLabLicenseTests.m \
             Source/GPSLabTokenVerifier.m \
             Source/GPSLabLicenseConfig.m \
+            Source/GPSLabPortalPolicy.c \
             -o /tmp/gpslab-license-tests
           /tmp/gpslab-license-tests
+
+  portal-policy-tests:
+    name: Web-portal security policy (portable C)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portable portal policy tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -Wall -Wextra -I Source tests/gpslab_portal_policy_test.c \
+            Source/GPSLabPortalPolicy.c -o /tmp/gpslab_portal_policy_test
+          /tmp/gpslab_portal_policy_test
+
+  portal-ui-wiring-tests:
+    name: Portal UI wiring (portable C, source-validated)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portal UI wiring assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -Wall -Wextra -I Source tests/gpslab_portal_ui_wiring_test.c \
+            -o /tmp/gpslab_portal_ui_wiring_test
+          /tmp/gpslab_portal_ui_wiring_test
+
+  portal-tests:
+    name: Portal config + device request builders (macOS Foundation)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run portal Foundation tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang -fobjc-arc -fmodules -framework Foundation -framework Security -ISource \
+            tests/GPSLabPortalTests.m Source/GPSLabLicenseConfig.m \
+            Source/GPSLabPortalPolicy.c Source/GPSLabDevicePairing.m \
+            Source/GPSLabSecureStore.m Source/GPSLabLocalization.m \
+            Source/GPSLabLocalizationCore.c -o /tmp/gpslab-portal-tests
+          /tmp/gpslab-portal-tests
 
   localization-core-tests:
     name: Localization core (portable C)
@@ -442,3 +491,14 @@ jobs:
       - name: Run keychain integration assertions (verified-builder equivalence, hardening, literal policy)
         shell: bash
         run: python3 tests/test_keychain_integration.py
+
+  source-secret-scan-tests:
+    name: Source secret hygiene fixtures (Python)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run source secret-scan fixture tests
+        shell: bash
+        run: python3 tests/test_source_secret_scan.py

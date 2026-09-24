@@ -1204,4 +1204,92 @@ grep -q -F "test_keychain_integration.py" "$ROOT/.github/workflows/tests.yml" \
     || fail "the keychain integration test must be run by the tests workflow"
 pass "integrated Keychain access-group hook is vendored, unconditional, idempotent and ordered"
 
+# ------------------------------ Web portal / device proof (hardening) ----------
+echo "== Web portal URLs and device proof =="
+PORTAL_POLICY_C="$SOURCE_DIR/GPSLabPortalPolicy.c"
+PORTAL_POLICY_H="$SOURCE_DIR/GPSLabPortalPolicy.h"
+PORTAL_VC="$SOURCE_DIR/GPSLabPortalViewController.m"
+PAIRING_M="$SOURCE_DIR/GPSLabDevicePairing.m"
+for file in "$PORTAL_POLICY_C" "$PORTAL_POLICY_H" "$PORTAL_VC" "$PAIRING_M"; do
+    [[ -f "$file" ]] || fail "portal source missing: $(basename "$file")"
+done
+for entry in Source/GPSLabPortalPolicy.c Source/GPSLabDevicePairing.m Source/GPSLabPortalViewController.m; do
+    grep -q -F "$entry" "$MAKEFILE" || fail "the Makefile must compile $entry"
+done
+# The config must validate every portal URL against the license endpoint origin.
+grep -q -F '#import "GPSLabPortalPolicy.h"' "$SOURCE_DIR/GPSLabLicenseConfig.m" \
+    || fail "the license config must use the shared portal policy"
+grep -q -F "GPSLabPortalURLIsSafe(" "$SOURCE_DIR/GPSLabLicenseConfig.m" \
+    || fail "portal URLs must be origin-checked"
+grep -q -F "resolvePortalURLs" "$SOURCE_DIR/GPSLabLicenseConfig.m" \
+    || fail "portal URLs must be resolved/derived from the endpoint origin"
+# The device client must reject redirects, cap the body and never build a URL query.
+grep -q -F "willPerformHTTPRedirection" "$PAIRING_M" || fail "device client must reject redirects"
+grep -q -F "completionHandler(nil)" "$PAIRING_M" || fail "device client must not follow redirects"
+grep -q -F "maxResponseBytes" "$PAIRING_M" || fail "device client must cap the response size"
+grep -q -F "HTTPMethod = @\"POST\"" "$PAIRING_M" || fail "device client must POST"
+# The transport must accept every 2xx (pairing 200, feedback 201), never only 200.
+grep -q -F "GPSLabPortalStatusIsSuccess" "$PAIRING_M" \
+    || fail "device client must accept every HTTP 2xx, not only 200"
+grep -q -F "GPSLabPortalStatusIsSuccess" "$PORTAL_POLICY_C" \
+    || fail "the 2xx success predicate must live in the shared policy"
+# The feedback allow-list must match the server enum.
+for category in bug feature billing account trial other; do
+    grep -q -F "\"$category\"" "$PORTAL_POLICY_C" \
+        || fail "the feedback allow-list is missing the $category category"
+done
+if grep -q -F "NSURLQueryItem" "$PAIRING_M"; then
+    fail "the device proof must never enter a URL query"
+fi
+# The portal screen copies the code in-app and never localizes through the bundle.
+grep -q -F "UIPasteboard.generalPasteboard.string = code" "$PORTAL_VC" \
+    || fail "the pairing code must be copied in-app"
+if grep -q -F "NSLocalizedString" "$PORTAL_VC"; then
+    fail "the portal screen must use the embedded catalog"
+fi
+# The account/support entry point must exist whether the app is locked or unlocked.
+grep -q -F "GPSLabPortalViewController" "$SOURCE_DIR/GPSLabSubscriptionViewController.m" \
+    || fail "the locked subscription screen must expose the portal"
+grep -q -F "presentPortalSheet" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
+    || fail "the unlocked canvas must expose the portal"
+# Tests are present and wired into the workflow.
+for testfile in tests/gpslab_portal_policy_test.c tests/gpslab_portal_ui_wiring_test.c \
+    tests/GPSLabPortalTests.m; do
+    [[ -f "$ROOT/$testfile" ]] || fail "portal test missing: $testfile"
+done
+grep -q -F "gpslab_portal_policy_test.c" "$ROOT/.github/workflows/tests.yml" \
+    || fail "the portal policy test must be run by the tests workflow"
+grep -q -F "gpslab_portal_ui_wiring_test.c" "$ROOT/.github/workflows/tests.yml" \
+    || fail "the portal UI wiring test must be run by the tests workflow"
+pass "portal URLs are same-origin, the device proof is body-only, and the code is display-only"
+
+# -------------------------------------------- Device secret fail-closed --------
+echo "== Device secret fail-closed =="
+SECURE_STORE="$SOURCE_DIR/GPSLabSecureStore.m"
+PORTAL_WIRING_TEST="$ROOT/tests/gpslab_portal_ui_wiring_test.c"
+[[ -f "$SECURE_STORE" ]] || fail "GPSLabSecureStore.m missing"
+# The device proof must FAIL CLOSED: when the Keychain persist fails the method
+# returns nil, never an ephemeral value a restart cannot reproduce (which would
+# silently mismatch the trust-on-first-use enrollment).
+grep -q -F "if (![self setData:secret forAccount:kGPSLabAccountDeviceSecret])" "$SECURE_STORE" \
+    || fail "the device secret must detect a failed Keychain persist"
+if ! grep -A8 -F "if (![self setData:secret forAccount:kGPSLabAccountDeviceSecret])" "$SECURE_STORE" \
+        | grep -q -F "return nil;"; then
+    fail "deviceSecret must return nil when the Keychain persist fails (fail closed)"
+fi
+if grep -q -F "still return a per-process value so a caller never" "$SECURE_STORE"; then
+    fail "the device secret must never fail open with an ephemeral value"
+fi
+# Exactly one Cache-Control header set in the device client (a duplicated set is
+# a no-op and must not silently return).
+if [[ "$(grep -c -F 'forHTTPHeaderField:@"Cache-Control"' "$SOURCE_DIR/GPSLabDevicePairing.m")" != "1" ]]; then
+    fail "the device client must set Cache-Control exactly once"
+fi
+# The static test must actually assert both invariants so a regression is caught.
+grep -q -F "deviceSecret FAILS CLOSED" "$PORTAL_WIRING_TEST" \
+    || fail "the portal wiring test must assert the device secret fails closed"
+grep -q -F "sets Cache-Control exactly once" "$PORTAL_WIRING_TEST" \
+    || fail "the portal wiring test must assert a single Cache-Control header"
+pass "device secret fails closed; device client sets Cache-Control once; static test asserts both"
+
 echo "All GPSLab static checks passed."

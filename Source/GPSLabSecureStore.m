@@ -15,6 +15,9 @@ static NSString * const kGPSLabAccountInstallation = @"installationUUID";
 static NSString * const kGPSLabAccountToken = @"tokenEnvelope";
 static NSString * const kGPSLabAccountMeta = @"entitlementMeta";
 static NSString * const kGPSLabAccountRefresh = @"refreshToken";
+static NSString * const kGPSLabAccountDeviceSecret = @"deviceSecret";
+
+static const NSUInteger kGPSLabDeviceSecretBytes = 32;
 
 @implementation GPSLabSecureStore
 
@@ -116,6 +119,36 @@ static NSString * const kGPSLabAccountRefresh = @"refreshToken";
         return nil;
     }
     return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+}
+
+- (NSData *)deviceSecret {
+    NSData *stored = [self dataForAccount:kGPSLabAccountDeviceSecret];
+    if (stored.length == kGPSLabDeviceSecretBytes) {
+        return stored;
+    }
+
+    NSMutableData *generated = [NSMutableData dataWithLength:kGPSLabDeviceSecretBytes];
+    if (generated == nil ||
+        SecRandomCopyBytes(kSecRandomDefault, kGPSLabDeviceSecretBytes, generated.mutableBytes) != errSecSuccess) {
+        return nil;
+    }
+    NSData *secret = [generated copy];
+    if (![self setData:secret forAccount:kGPSLabAccountDeviceSecret]) {
+        // FAIL CLOSED: an ephemeral secret would not survive a restart, so the
+        // device could later present a value that no longer matches what it
+        // enrolled first (a silent trust-on-first-use mismatch). Return nil (no
+        // proof) rather than a value that is lost on the next launch.
+        return nil;
+    }
+    return secret;
+}
+
+- (NSString *)deviceSecretBase64 {
+    NSData *secret = [self deviceSecret];
+    if (secret.length == 0) {
+        return nil;
+    }
+    return [secret base64EncodedStringWithOptions:0];
 }
 
 - (BOOL)storeTokenEnvelope:(NSData *)envelope meta:(NSData *)meta refreshToken:(NSString *)refreshToken {

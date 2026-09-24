@@ -12,8 +12,17 @@
 //
 //  Host Info.plist keys (all optional):
 //    GPSLabLicenseEndpoint, GPSLabLicensePublicKey, GPSLabSignInURL,
-//    GPSLabManageAccountURL, GPSLabLicenseIssuer, GPSLabLicenseAudience,
+//    GPSLabManageAccountURL, GPSLabPortalURL, GPSLabTrialPairingURL,
+//    GPSLabHelpURL, GPSLabPairingEndpoint, GPSLabFeedbackEndpoint,
+//    GPSLabLicenseIssuer, GPSLabLicenseAudience,
 //    GPSLabMaxOfflineGraceSeconds, GPSLabMaxClockSkewSeconds
+//
+//  Every portal/account URL (the five above plus SignIn/Manage) is forced to
+//  share the LICENSE ENDPOINT's exact HTTPS origin (scheme + host + port) and is
+//  rejected when it carries credentials or an identifier/token query. When an
+//  explicit value is absent a safe same-origin default is derived from the
+//  endpoint, so a production build only has to point the license endpoint at the
+//  portal host.
 //
 
 #import <Foundation/Foundation.h>
@@ -25,8 +34,23 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) NSURL *endpoint;
 @property (nonatomic, copy, nullable) NSData *publicKey;
 
+/** Canonical "https://host[:port]" of `endpoint`; nil when unconfigured. */
+@property (nonatomic, copy, nullable, readonly) NSString *endpointOrigin;
+
 @property (nonatomic, copy, nullable) NSURL *signInURL;
 @property (nonatomic, copy, nullable) NSURL *manageAccountURL;
+
+/** Browser account home (`/account` by default). */
+@property (nonatomic, copy, nullable) NSURL *portalURL;
+/** Browser one-time pairing page (`/account/pair` by default). */
+@property (nonatomic, copy, nullable) NSURL *trialPairingURL;
+/** Browser help page (`/help` by default). */
+@property (nonatomic, copy, nullable) NSURL *helpURL;
+
+/** Device pairing endpoint (`/api/v1/device/pair` by default). */
+@property (nonatomic, copy, nullable) NSURL *pairingEndpoint;
+/** Device feedback endpoint (`/api/v1/device/feedback` by default). */
+@property (nonatomic, copy, nullable) NSURL *feedbackEndpoint;
 
 @property (nonatomic, copy, nullable) NSString *issuer;
 @property (nonatomic, copy, nullable) NSString *audience;

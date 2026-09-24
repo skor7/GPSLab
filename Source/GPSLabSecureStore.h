@@ -8,7 +8,11 @@
 //    * the verified token envelope,
 //    * a minimal anti-rollback metadata blob (last-seen wall/uptime + authenticated
 //      status, version and nothing else),
-//    * an optional refresh token.
+//    * an optional refresh token,
+//    * a per-installation 32-byte device secret used ONLY as the device pairing /
+//      feedback proof. It is deliberately separate from license material:
+//      `clearLicenseMaterial` keeps it, so pairing survives sign-out, and it is
+//      never placed in a URL, a log or the metadata blob.
 //
 //  The metadata blob is the one item beyond "UUID/token/refresh"; it is required to
 //  detect wall-clock rollback and to preserve an authenticated revoked/expired status
@@ -29,6 +33,17 @@ NS_ASSUME_NONNULL_BEGIN
 - (nullable NSData *)tokenEnvelope;
 - (nullable NSData *)entitlementMeta;
 - (nullable NSString *)refreshToken;
+
+/**
+ * Per-installation 32-byte device proof. Created and persisted on first access.
+ * FAIL CLOSED: when the Keychain write cannot be persisted the method returns nil
+ * rather than an ephemeral value, so a restart can never present a different
+ * proof and silently mismatch the value enrolled first (no ephemeral enrollment).
+ */
+- (nullable NSData *)deviceSecret;
+
+/** Base64 (standard alphabet) of `deviceSecret`; nil when unavailable. */
+- (nullable NSString *)deviceSecretBase64;
 
 /** Persists verified material atomically (best effort). */
 - (BOOL)storeTokenEnvelope:(NSData *)envelope

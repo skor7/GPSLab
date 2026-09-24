@@ -30,6 +30,9 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, copy, nullable) void (^recentsHandler)(void);
 @property (nonatomic, copy, nullable) void (^fluctuationHandler)(void);
 
+/** Opens the account/support portal (subscription, trial, help, feedback). */
+@property (nonatomic, copy, nullable) void (^accountHandler)(void);
+
 @end
 
 NS_ASSUME_NONNULL_END

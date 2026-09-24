@@ -22,6 +22,7 @@
 @property (nonatomic, strong) UIButton *manualButton;
 @property (nonatomic, strong) UIButton *recentsButton;
 @property (nonatomic, strong) UIButton *fluctuationButton;
+@property (nonatomic, strong) UIButton *accountButton;
 @property (nonatomic, strong) UILabel *anchorHeader;
 @property (nonatomic, strong) UILabel *preferencesHeader;
 @property (nonatomic, strong) UILabel *mapStyleHeader;
@@ -40,6 +41,7 @@
     self.manualButton = [self actionButtonWithTitle:@"" action:@selector(manualTapped)];
     self.recentsButton = [self actionButtonWithTitle:@"" action:@selector(recentsTapped)];
     self.fluctuationButton = [self actionButtonWithTitle:@"" action:@selector(fluctuationTapped)];
+    self.accountButton = [self actionButtonWithTitle:@"" action:@selector(accountTapped)];
 
     self.keepLastSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
     self.keepLastSwitch.on = self.keepLastCoordinate;
@@ -95,6 +97,10 @@
     [content addArrangedSubview:self.languageHeader];
     [content addArrangedSubview:self.languageControl];
 
+    // Always reachable, regardless of entitlement state: subscription, sign-in,
+    // manage/renew, trial pairing, help and in-app feedback.
+    [content addArrangedSubview:self.accountButton];
+
     // Active is deliberately silent; only a meaningful status (e.g. grace) is shown here.
     if (self.subscriptionStatusText.length > 0) {
         self.subscriptionHeader = [self sectionHeaderLabel:@""];
@@ -122,6 +128,7 @@
     [self.recentsButton setTitle:GPSLabLocalized(@"options.recents") forState:UIControlStateNormal];
     [self.fluctuationButton setTitle:GPSLabLocalized(@"options.fluctuation")
                             forState:UIControlStateNormal];
+    [self.accountButton setTitle:GPSLabLocalized(@"options.account") forState:UIControlStateNormal];
     self.anchorHeader.text = GPSLabLocalized(@"options.section.anchor");
     self.preferencesHeader.text = GPSLabLocalized(@"options.section.preferences");
     self.mapStyleHeader.text = GPSLabLocalized(@"options.section.mapStyle");
@@ -170,6 +177,12 @@
 - (void)fluctuationTapped {
     if (self.fluctuationHandler != nil) {
         self.fluctuationHandler();
+    }
+}
+
+- (void)accountTapped {
+    if (self.accountHandler != nil) {
+        self.accountHandler();
     }
 }
 

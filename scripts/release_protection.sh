@@ -66,7 +66,14 @@ if grep -r -n -E '(/Users/|/home/|[A-Za-z]:\\)' "$SOURCE_DIR" >/dev/null 2>&1; t
 fi
 pass "no absolute developer paths in shipping sources"
 
-if grep -r -n -i -E 'BEGIN [A-Z ]*PRIVATE KEY|PRIVATE_KEY|api[_-]?key[[:space:]]*=|password[[:space:]]*=|secret[[:space:]]*=' "$SOURCE_DIR" >/dev/null 2>&1; then
+# Semantic scan: flag genuinely embedded credentials (PEM private-key blocks,
+# PRIVATE_KEY symbols and credential-named variables assigned a hardcoded string
+# literal) while allowing the safe runtime Keychain deviceSecret variable and the
+# "devicesecret=" URL query blocker. The scanner prints path:line:pattern only,
+# never the matched value.
+command -v "$PYTHON" >/dev/null 2>&1 || fail "$PYTHON is required for the source secret scan"
+if ! SECRET_FINDINGS="$("$PYTHON" "$ROOT/scripts/source_secret_scan.py" "$SOURCE_DIR" --root "$ROOT")"; then
+    printf '%s\n' "$SECRET_FINDINGS" >&2
     fail "an embedded secret, private key or credential literal was found"
 fi
 pass "no embedded secrets, private keys or credential literals"

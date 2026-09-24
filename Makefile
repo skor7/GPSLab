@@ -78,11 +78,14 @@ GPSLab_FILES = \
 	Source/fishhook.c \
 	Source/GPSLabKeychainCompat.m \
 	Source/GPSLabLicenseConfig.m \
+	Source/GPSLabPortalPolicy.c \
 	Source/GPSLabSecureStore.m \
 	Source/GPSLabTokenVerifier.m \
 	Source/GPSLabEntitlement.m \
 	Source/GPSLabLicenseManager.m \
+	Source/GPSLabDevicePairing.m \
 	Source/GPSLabSubscriptionViewController.m \
+	Source/GPSLabPortalViewController.m \
 	Source/GPSLabModalCoordinator.m \
 	Source/GPSLabSheetViewController.m \
 	Source/GPSLabSearchResultsViewController.m \

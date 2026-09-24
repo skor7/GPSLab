@@ -9,15 +9,30 @@
 #import "GPSLabLicenseConfig.h"
 
 #import "GPSLabLicenseBuildConfig.h"
+#import "GPSLabPortalPolicy.h"
 
 static NSString * const kGPSLabConfigEndpointKey = @"GPSLabLicenseEndpoint";
 static NSString * const kGPSLabConfigPublicKeyKey = @"GPSLabLicensePublicKey";
 static NSString * const kGPSLabConfigSignInKey = @"GPSLabSignInURL";
 static NSString * const kGPSLabConfigManageKey = @"GPSLabManageAccountURL";
+static NSString * const kGPSLabConfigPortalKey = @"GPSLabPortalURL";
+static NSString * const kGPSLabConfigTrialPairingKey = @"GPSLabTrialPairingURL";
+static NSString * const kGPSLabConfigHelpKey = @"GPSLabHelpURL";
+static NSString * const kGPSLabConfigPairingEndpointKey = @"GPSLabPairingEndpoint";
+static NSString * const kGPSLabConfigFeedbackEndpointKey = @"GPSLabFeedbackEndpoint";
 static NSString * const kGPSLabConfigIssuerKey = @"GPSLabLicenseIssuer";
 static NSString * const kGPSLabConfigAudienceKey = @"GPSLabLicenseAudience";
 static NSString * const kGPSLabConfigGraceKey = @"GPSLabMaxOfflineGraceSeconds";
 static NSString * const kGPSLabConfigSkewKey = @"GPSLabMaxClockSkewSeconds";
+
+// Safe same-origin defaults, derived from the license endpoint only.
+static NSString * const kGPSLabPortalDefaultSignInPath = @"/account/login";
+static NSString * const kGPSLabPortalDefaultManagePath = @"/account";
+static NSString * const kGPSLabPortalDefaultHomePath = @"/account";
+static NSString * const kGPSLabPortalDefaultTrialPath = @"/account/pair";
+static NSString * const kGPSLabPortalDefaultHelpPath = @"/help";
+static NSString * const kGPSLabPortalDefaultPairingPath = @"/api/v1/device/pair";
+static NSString * const kGPSLabPortalDefaultFeedbackPath = @"/api/v1/device/feedback";
 
 static const NSTimeInterval kGPSLabDefaultGraceSeconds = 604800.0;   // 7 days
 static const NSTimeInterval kGPSLabDefaultSkewSeconds = 300.0;
@@ -55,6 +70,46 @@ static NSString *GPSLabBuildSignInURL(void) {
 static NSString *GPSLabBuildManageURL(void) {
 #if defined(GPSLAB_LICENSE_BUILD_MANAGE_URL)
     return GPSLAB_LICENSE_BUILD_MANAGE_URL;
+#else
+    return nil;
+#endif
+}
+
+static NSString *GPSLabBuildPortalURL(void) {
+#if defined(GPSLAB_LICENSE_BUILD_PORTAL_URL)
+    return GPSLAB_LICENSE_BUILD_PORTAL_URL;
+#else
+    return nil;
+#endif
+}
+
+static NSString *GPSLabBuildTrialURL(void) {
+#if defined(GPSLAB_LICENSE_BUILD_TRIAL_URL)
+    return GPSLAB_LICENSE_BUILD_TRIAL_URL;
+#else
+    return nil;
+#endif
+}
+
+static NSString *GPSLabBuildHelpURL(void) {
+#if defined(GPSLAB_LICENSE_BUILD_HELP_URL)
+    return GPSLAB_LICENSE_BUILD_HELP_URL;
+#else
+    return nil;
+#endif
+}
+
+static NSString *GPSLabBuildPairingEndpoint(void) {
+#if defined(GPSLAB_LICENSE_BUILD_PAIR_ENDPOINT)
+    return GPSLAB_LICENSE_BUILD_PAIR_ENDPOINT;
+#else
+    return nil;
+#endif
+}
+
+static NSString *GPSLabBuildFeedbackEndpoint(void) {
+#if defined(GPSLAB_LICENSE_BUILD_FEEDBACK_ENDPOINT)
+    return GPSLAB_LICENSE_BUILD_FEEDBACK_ENDPOINT;
 #else
     return nil;
 #endif
@@ -110,7 +165,47 @@ static NSURL *GPSLabHTTPSURLFromString(NSString *string) {
     if (url == nil || ![url.scheme.lowercaseString isEqualToString:@"https"] || url.host.length == 0) {
         return nil;
     }
+    // Never accept an authority with embedded userinfo or an identifier query:
+    // the license endpoint carries no credential and no caller identifier.
+    if (GPSLabPortalURLHasEmbeddedCredential(string.UTF8String)) {
+        return nil;
+    }
     return url;
+}
+
+/** Canonical "https://host[:port]" origin of a URL string, or nil. */
+static NSString *GPSLabOriginFromURLString(NSString *string) {
+    if (![string isKindOfClass:[NSString class]] || string.length == 0) {
+        return nil;
+    }
+    char buffer[GPSLAB_PORTAL_MAX_URL + 1];
+    size_t length = GPSLabPortalOriginFromURL(string.UTF8String, buffer, sizeof(buffer));
+    if (length == 0) {
+        return nil;
+    }
+    return [NSString stringWithUTF8String:buffer];
+}
+
+/**
+ * Returns `string` as a URL only when `origin` is known and the URL passes the
+ * shared policy (exact HTTPS origin, no credentials, no identifier query).
+ */
+static NSURL *GPSLabSafePortalURL(NSString *string, NSString *origin) {
+    if (![string isKindOfClass:[NSString class]] || string.length == 0 || origin.length == 0) {
+        return nil;
+    }
+    if (!GPSLabPortalURLIsSafe(string.UTF8String, origin.UTF8String)) {
+        return nil;
+    }
+    return [NSURL URLWithString:string];
+}
+
+/** Builds and validates `origin + path` (path starts with '/'). */
+static NSURL *GPSLabDerivedPortalURL(NSString *origin, NSString *path) {
+    if (origin.length == 0 || path.length == 0) {
+        return nil;
+    }
+    return GPSLabSafePortalURL([origin stringByAppendingString:path], origin);
 }
 
 static NSData *GPSLabDecodedPublicKey(NSString *string) {
@@ -139,6 +234,10 @@ static BOOL GPSLabAcceptSeconds(NSNumber *number, NSTimeInterval maximum, NSTime
     }
     return YES;
 }
+
+@interface GPSLabLicenseConfig ()
+- (void)resolvePortalURLs;
+@end
 
 @implementation GPSLabLicenseConfig
 
@@ -170,6 +269,11 @@ static BOOL GPSLabAcceptSeconds(NSNumber *number, NSTimeInterval maximum, NSTime
     config.endpoint = GPSLabHTTPSURLFromString(info[kGPSLabConfigEndpointKey]);
     config.signInURL = GPSLabHTTPSURLFromString(info[kGPSLabConfigSignInKey]);
     config.manageAccountURL = GPSLabHTTPSURLFromString(info[kGPSLabConfigManageKey]);
+    config.portalURL = GPSLabHTTPSURLFromString(info[kGPSLabConfigPortalKey]);
+    config.trialPairingURL = GPSLabHTTPSURLFromString(info[kGPSLabConfigTrialPairingKey]);
+    config.helpURL = GPSLabHTTPSURLFromString(info[kGPSLabConfigHelpKey]);
+    config.pairingEndpoint = GPSLabHTTPSURLFromString(info[kGPSLabConfigPairingEndpointKey]);
+    config.feedbackEndpoint = GPSLabHTTPSURLFromString(info[kGPSLabConfigFeedbackEndpointKey]);
     config.publicKey = GPSLabDecodedPublicKey(info[kGPSLabConfigPublicKeyKey]);
 
     NSString *issuer = info[kGPSLabConfigIssuerKey];
@@ -188,7 +292,55 @@ static BOOL GPSLabAcceptSeconds(NSNumber *number, NSTimeInterval maximum, NSTime
     if (GPSLabAcceptSeconds(info[kGPSLabConfigSkewKey], 24.0 * 60.0 * 60.0, &seconds)) {
         config.maxClockSkewSeconds = seconds;
     }
+
+    [config resolvePortalURLs];
     return config;
+}
+
+/**
+ * Forces every portal/account URL to the license endpoint's exact HTTPS origin
+ * and fills any missing value with a safe same-origin default. Called after the
+ * Info.plist load and again after build-time overrides (which may move the
+ * endpoint host, invalidating earlier values).
+ */
+- (void)resolvePortalURLs {
+    NSString *origin = GPSLabOriginFromURLString(self.endpoint.absoluteString);
+    self.signInURL = GPSLabSafePortalURL(self.signInURL.absoluteString, origin);
+    self.manageAccountURL = GPSLabSafePortalURL(self.manageAccountURL.absoluteString, origin);
+    self.portalURL = GPSLabSafePortalURL(self.portalURL.absoluteString, origin);
+    self.trialPairingURL = GPSLabSafePortalURL(self.trialPairingURL.absoluteString, origin);
+    self.helpURL = GPSLabSafePortalURL(self.helpURL.absoluteString, origin);
+    self.pairingEndpoint = GPSLabSafePortalURL(self.pairingEndpoint.absoluteString, origin);
+    self.feedbackEndpoint = GPSLabSafePortalURL(self.feedbackEndpoint.absoluteString, origin);
+
+    if (origin.length == 0) {
+        return;
+    }
+    if (self.signInURL == nil) {
+        self.signInURL = GPSLabDerivedPortalURL(origin, kGPSLabPortalDefaultSignInPath);
+    }
+    if (self.manageAccountURL == nil) {
+        self.manageAccountURL = GPSLabDerivedPortalURL(origin, kGPSLabPortalDefaultManagePath);
+    }
+    if (self.portalURL == nil) {
+        self.portalURL = GPSLabDerivedPortalURL(origin, kGPSLabPortalDefaultHomePath);
+    }
+    if (self.trialPairingURL == nil) {
+        self.trialPairingURL = GPSLabDerivedPortalURL(origin, kGPSLabPortalDefaultTrialPath);
+    }
+    if (self.helpURL == nil) {
+        self.helpURL = GPSLabDerivedPortalURL(origin, kGPSLabPortalDefaultHelpPath);
+    }
+    if (self.pairingEndpoint == nil) {
+        self.pairingEndpoint = GPSLabDerivedPortalURL(origin, kGPSLabPortalDefaultPairingPath);
+    }
+    if (self.feedbackEndpoint == nil) {
+        self.feedbackEndpoint = GPSLabDerivedPortalURL(origin, kGPSLabPortalDefaultFeedbackPath);
+    }
+}
+
+- (NSString *)endpointOrigin {
+    return GPSLabOriginFromURLString(self.endpoint.absoluteString);
 }
 
 // Build-time macros win over the host Info.plist. Never carries a private key.
@@ -209,6 +361,26 @@ static BOOL GPSLabAcceptSeconds(NSNumber *number, NSTimeInterval maximum, NSTime
     if (manage != nil) {
         self.manageAccountURL = manage;
     }
+    NSURL *portal = GPSLabHTTPSURLFromString(GPSLabBuildPortalURL());
+    if (portal != nil) {
+        self.portalURL = portal;
+    }
+    NSURL *trial = GPSLabHTTPSURLFromString(GPSLabBuildTrialURL());
+    if (trial != nil) {
+        self.trialPairingURL = trial;
+    }
+    NSURL *help = GPSLabHTTPSURLFromString(GPSLabBuildHelpURL());
+    if (help != nil) {
+        self.helpURL = help;
+    }
+    NSURL *pair = GPSLabHTTPSURLFromString(GPSLabBuildPairingEndpoint());
+    if (pair != nil) {
+        self.pairingEndpoint = pair;
+    }
+    NSURL *feedback = GPSLabHTTPSURLFromString(GPSLabBuildFeedbackEndpoint());
+    if (feedback != nil) {
+        self.feedbackEndpoint = feedback;
+    }
     NSString *issuer = GPSLabBuildIssuer();
     if (issuer.length > 0) {
         self.issuer = issuer;
@@ -224,6 +396,8 @@ static BOOL GPSLabAcceptSeconds(NSNumber *number, NSTimeInterval maximum, NSTime
     if (GPSLabBuildSkewSeconds(&seconds) && seconds >= 0.0) {
         self.maxClockSkewSeconds = seconds;
     }
+    // The build may have moved the endpoint, so re-resolve the portal URLs.
+    [self resolvePortalURLs];
 }
 
 - (BOOL)isConfigured {

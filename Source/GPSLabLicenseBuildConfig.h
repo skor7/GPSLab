@@ -27,5 +27,16 @@
 #define GPSLAB_LICENSE_BUILD_AUDIENCE   @"GPSLab-iOS"
 // #define GPSLAB_LICENSE_BUILD_SKEW_SECONDS 300
 // #define GPSLAB_LICENSE_BUILD_GRACE_SECONDS 604800
+//
+// Web-portal URLs / device endpoints. All are OPTIONAL: when unset, a safe
+// same-origin default is derived from GPSLAB_LICENSE_BUILD_ENDPOINT (or the host
+// Info.plist endpoint). Any explicit value is rejected unless it is HTTPS, on the
+// exact endpoint origin, and free of credentials/identifier query parameters.
+// NEVER put a signing key, password or API secret in any of these.
+// #define GPSLAB_LICENSE_BUILD_PORTAL_URL        @"https://example.com/account"
+// #define GPSLAB_LICENSE_BUILD_TRIAL_URL         @"https://example.com/account/pair"
+// #define GPSLAB_LICENSE_BUILD_HELP_URL          @"https://example.com/help"
+// #define GPSLAB_LICENSE_BUILD_PAIR_ENDPOINT     @"https://example.com/api/v1/device/pair"
+// #define GPSLAB_LICENSE_BUILD_FEEDBACK_ENDPOINT @"https://example.com/api/v1/device/feedback"
 
 #endif /* GPSLAB_LICENSE_BUILD_CONFIG_H */

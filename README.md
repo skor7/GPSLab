@@ -149,9 +149,12 @@ GPSLabLicenseManager       fail-closed entitlement coordinator (engine gate + st
   ├─ GPSLabLicensePolicy   pure-C bounded state/time/rollback policy (shared with tests)
   ├─ GPSLabLicenseConfig   macros -> Info.plist -> EMPTY (independent build config)
   ├─ GPSLabTokenVerifier   Security.framework P-256 / SHA-256 envelope verification
-  ├─ GPSLabSecureStore     Keychain-only installation UUID/token/meta/refresh
+  ├─ GPSLabSecureStore     Keychain-only installation UUID/token/meta/refresh + device secret
+  ├─ GPSLabPortalPolicy    pure-C portal URL/feedback/pairing-code policy (shared with tests)
+  ├─ GPSLabDevicePairing   hardened POST /api/v1/device/{pair,feedback} (body-only proof)
   ├─ GPSLabEntitlement     resolved state snapshot (Active/Grace = unlocked)
-  └─ GPSLabSubscriptionViewController  status + Activate/Sign In/Restore/Try Again/Manage
+  ├─ GPSLabSubscriptionViewController  status + Activate/Sign In/Restore/Try Again/Manage + Account
+  └─ GPSLabPortalViewController  account/support: subscription, sign-in, manage, trial, help, feedback
 GPSLabStatusLog            bounded, non-sensitive status text for the overlay
 Diagnostics                os_log only; allowed events; never logs coordinates
 ```
@@ -362,6 +365,33 @@ a `grace` token without a real `graceUntil > expiresAt` window).
   map canvas (Activate / Sign In / Restore / Try Again / Manage Account; every button
   is either genuinely wired or visibly disabled with a plain-language reason).
   `GPSLabPrimaryInterface` is the single overlay-vs-subscription selection seam.
+- **Account & Support** is reachable in BOTH states: the locked subscription screen and
+  the unlocked Options sheet both open `GPSLabPortalViewController`, which surfaces the
+  subscription status, browser sign-in, manage/renew, trial device pairing, help and an
+  in-app feedback form. It never changes entitlement state and never uses a web view.
+
+### Web portal, trial pairing and feedback
+
+The app talks to the signed-license backend only. Two extra device-proof calls are made
+directly over HTTPS (never through a browser or a web view):
+
+- `POST /api/v1/device/pair` `{installationId, deviceSecret}` returns `200`
+  `{installationId, code, expiresAt}` (`expiresAt` is an ISO-8601 UTC timestamp). The
+  one-time code is displayed and copyable **only in the app**; the user types it at the
+  browser `/account/pair` page. The code and proof never enter a URL or a log.
+- `POST /api/v1/device/feedback` `{installationId, deviceSecret, category, message}`
+  returns `201 Created`, with a fixed category allow-list (`bug`, `feature`, `billing`,
+  `account`, `trial`, `other`) and a 2000-byte, UTF-8-bound message from the actual
+  in-app form. The client treats any `2xx` as success.
+
+`deviceSecret` is a per-installation 32-byte random value in the Keychain, separate from
+license material (it survives `clearLicenseMaterial`). Portal/account URLs are HTTPS-only,
+must share the license endpoint's exact origin, and are rejected when they carry
+credentials or an identifier/token query. When unset they are derived from the endpoint
+origin (`/account`, `/account/login`, `/account/pair`, `/help`,
+`/api/v1/device/{pair,feedback}`) and can be overridden per build with the
+`GPSLAB_LICENSE_BUILD_*` macros or the `GPSLab*URL` Info.plist keys. On app return the
+existing foreground reconcile still runs; the portal shows an explicit refresh status.
 
 ### Production setup (blocker)
 
