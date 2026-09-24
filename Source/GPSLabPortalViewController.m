@@ -36,7 +36,7 @@
 @property (nonatomic, strong) UILabel *trialNote;
 @property (nonatomic, strong) UIButton *pairButton;
 @property (nonatomic, strong) UILabel *pairCodeLabel;
-@property (nonatomic, strong) UIButton *copyCodeButton;
+@property (nonatomic, strong) UIButton *pairingCodeCopyButton;
 @property (nonatomic, strong) UIButton *openPairPageButton;
 
 @property (nonatomic, strong) UILabel *feedbackHeader;
@@ -73,7 +73,7 @@
     self.pairCodeLabel = [self bodyLabel:@""];
     self.pairCodeLabel.font = [UIFont monospacedSystemFontOfSize:20.0 weight:UIFontWeightSemibold];
     [GPSLabLocalization forceLeftToRight:self.pairCodeLabel];
-    self.copyCodeButton = [self actionButtonWithTitle:@"" action:@selector(copyCodeTapped)];
+    self.pairingCodeCopyButton = [self actionButtonWithTitle:@"" action:@selector(copyCodeTapped)];
     self.openPairPageButton = [self actionButtonWithTitle:@"" action:@selector(openPairPageTapped)];
 
     self.feedbackHeader = [self sectionHeaderLabel:@""];
@@ -118,7 +118,7 @@
     [content addArrangedSubview:self.trialNote];
     [content addArrangedSubview:self.pairButton];
     [content addArrangedSubview:self.pairCodeLabel];
-    [content addArrangedSubview:self.copyCodeButton];
+    [content addArrangedSubview:self.pairingCodeCopyButton];
     [content addArrangedSubview:self.openPairPageButton];
     [content addArrangedSubview:self.feedbackHeader];
     [content addArrangedSubview:self.categoryControl];
@@ -153,13 +153,13 @@
     self.trialHeader.text = GPSLabLocalized(@"portal.trial.header");
     self.trialNote.text = GPSLabLocalized(@"portal.trial.note");
     [self.pairButton setTitle:GPSLabLocalized(@"portal.trial.pair") forState:UIControlStateNormal];
-    [self.copyCodeButton setTitle:GPSLabLocalized(@"portal.trial.copy") forState:UIControlStateNormal];
+    [self.pairingCodeCopyButton setTitle:GPSLabLocalized(@"portal.trial.copy") forState:UIControlStateNormal];
     [self.openPairPageButton setTitle:GPSLabLocalized(@"portal.trial.open") forState:UIControlStateNormal];
     self.feedbackHeader.text = GPSLabLocalized(@"portal.feedback.header");
     [self.sendFeedbackButton setTitle:GPSLabLocalized(@"portal.feedback.send") forState:UIControlStateNormal];
     self.messageHint.text = GPSLabLocalized(@"portal.feedback.hint");
 
-    if (self.categoryControl.numberOfSegments >= GPSLabPortalFeedbackCategoryCount()) {
+    if (self.categoryControl.numberOfSegments >= (NSUInteger)GPSLabPortalFeedbackCategoryCount()) {
         for (int index = 0; index < GPSLabPortalFeedbackCategoryCount(); index++) {
             const char *token = GPSLabPortalFeedbackCategoryAt(index);
             NSString *key = [NSString stringWithFormat:@"portal.feedback.category.%s", token];
@@ -225,7 +225,7 @@
     BOOL pairingConfigured = [GPSLabDevicePairing sharedClient].isConfigured;
     self.pairButton.enabled = pairingConfigured;
     self.openPairPageButton.enabled = config.trialPairingURL != nil;
-    self.copyCodeButton.enabled = self.pairCodeLabel.text.length > 0;
+    self.pairingCodeCopyButton.enabled = self.pairCodeLabel.text.length > 0;
 
     self.sendFeedbackButton.enabled = [GPSLabDevicePairing sharedClient].isConfigured;
 

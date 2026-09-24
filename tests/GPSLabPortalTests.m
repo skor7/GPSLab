@@ -145,8 +145,8 @@ int main(void) {
                                                                                   category:category
                                                                                    message:@"x"];
             NSDictionary *categoryJSON = [NSJSONSerialization JSONObjectWithData:categoryBody options:0 error:NULL];
-            CHECK([categoryJSON[@"category"] isEqualToString:category],
-                  [NSString stringWithFormat:@"feedback body accepts the %@ category", category]);
+            NSString *categoryMessage = [NSString stringWithFormat:@"feedback body accepts the %@ category", category];
+            CHECK([categoryJSON[@"category"] isEqualToString:category], categoryMessage);
         }
         CHECK([GPSLabDevicePairing feedbackRequestBodyForInstallation:@"install-1"
                                                          deviceSecret:@"secret-1"
