@@ -13,7 +13,7 @@ static os_log_t GPSLabLogHandle(void) {
     static os_log_t handle = NULL;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        handle = os_log_create("com.gpslab.runtime", "GPSLab");
+        handle = os_log_create("com.gpslab.runtime.diagnostics", "GPSLab");
     });
     return handle;
 }
