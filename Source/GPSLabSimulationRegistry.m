@@ -7,12 +7,15 @@
 
 #import <objc/message.h>
 
+#import "GPSLabProtectedString.h"
+
 static GPSLabProfileWiFiConfig *gGPSLabActiveWiFiConfig = nil;
 static GPSLabProfileBluetoothConfig *gGPSLabActiveBluetoothConfig = nil;
 
-static NSString * const kGPSLabSimulationSuite = @"com.gpslab.runtime";
-static NSString * const kGPSLabWiFiEnabledKey = @"GPSLab.simulation.wifi.enabled";
-static NSString * const kGPSLabBluetoothEnabledKey = @"GPSLab.simulation.bluetooth.enabled";
+// Client-only storage namespace/keys: decoded in PRODUCTION, readable in DEV.
+#define kGPSLabSimulationSuite GPSLAB_PROTECTED_STRING(DefaultsSuite)
+#define kGPSLabWiFiEnabledKey GPSLAB_PROTECTED_STRING(WiFiSimulationKey)
+#define kGPSLabBluetoothEnabledKey GPSLAB_PROTECTED_STRING(BluetoothSimulationKey)
 
 @implementation GPSLabSimulationRegistry
 

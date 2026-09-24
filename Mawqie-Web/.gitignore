@@ -1,0 +1,9 @@
+# Local runtime state (accounts, orders, licenses, tickets, audit) and secrets.
+# Never commit real configuration or customer data.
+.env
+.env.*
+!.env.example
+data/
+*.log
+node_modules/
+coverage/

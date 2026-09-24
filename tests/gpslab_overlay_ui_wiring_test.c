@@ -357,13 +357,20 @@ static void test_form_actions_end_editing(const char *manual, const char *form,
 
 static void test_map_preference(const char *overlay, const char *store,
                                 const char *storeHeader, const char *types,
-                                const char *configuration, const char *profile) {
+                                const char *configuration, const char *profile,
+                                const char *manifest) {
     // The UI preference is persisted by the store and never enters the schema.
     CHECK(contains(storeHeader, "- (GPSLabMapStyle)loadMapStyle;"),
           "the store exposes loadMapStyle");
     CHECK(contains(storeHeader, "- (void)saveMapStyle:(GPSLabMapStyle)style;"),
           "the store exposes saveMapStyle");
-    CHECK(contains(store, "@\"GPSLab.mapStyle\""), "the store persists the exact map-style key");
+    // The store persists the key through the manifest-driven protected literal
+    // (GPSLAB_PROTECTED_STRING(MapStyleKey)); the exact value is defined once in
+    // the manifest and verified by scripts/validate.sh + audit_protected_strings.
+    CHECK(contains(store, "GPSLAB_PROTECTED_STRING(MapStyleKey)") || contains(store, "@\"GPSLab.mapStyle\""),
+          "the store references the exact map-style key (protected literal or literal)");
+    CHECK(contains(manifest, "GPSLAB_STRING(MapStyleKey, \"GPSLab.mapStyle\")"),
+          "the protected-string manifest defines the exact map-style key");
     CHECK(contains(store, "GPSLabMapStyleSatellite"), "missing/invalid resolves to Satellite");
     CHECK(contains(store, "GPSLabMapStyleStandard") && contains(store, "GPSLabMapStyleSatellite"),
           "the store validates the persisted style range");
@@ -425,6 +432,7 @@ int main(void) {
     const char *configuration_path = "Source/GPSLabConfiguration.m";
     const char *profile_path = "Source/GPSLabProfile.m";
     const char *catalog_path = "Source/GPSLabLocalizationCore.c";
+    const char *manifest_path = "Source/GPSLabProtectedStrings.def";
 
     char *overlay = read_file(overlay_path);
     char *sheet = read_file(sheet_path);
@@ -438,22 +446,23 @@ int main(void) {
     char *configuration = read_file(configuration_path);
     char *profile = read_file(profile_path);
     char *catalog = read_file(catalog_path);
+    char *manifest = read_file(manifest_path);
 
     if (overlay == NULL || sheet == NULL || manual == NULL || form == NULL ||
         subscription == NULL || altitude == NULL || store == NULL ||
         store_header == NULL || types == NULL || configuration == NULL || profile == NULL ||
-        catalog == NULL) {
+        catalog == NULL || manifest == NULL) {
         fprintf(stderr, "FAIL: cannot read one or more sources (run from the repository root)\n");
         free(overlay); free(sheet); free(manual); free(form); free(subscription);
         free(altitude); free(store); free(store_header); free(types); free(configuration);
-        free(profile); free(catalog);
+        free(profile); free(catalog); free(manifest);
         return 1;
     }
 
     test_overlay_drift_draft(overlay, catalog);
     test_sheet_keyboard(sheet);
     test_form_actions_end_editing(manual, form, subscription, altitude);
-    test_map_preference(overlay, store, store_header, types, configuration, profile);
+    test_map_preference(overlay, store, store_header, types, configuration, profile, manifest);
 
     free(overlay);
     free(sheet);
@@ -467,6 +476,7 @@ int main(void) {
     free(configuration);
     free(profile);
     free(catalog);
+    free(manifest);
 
     if (gFailures != 0) {
         fprintf(stderr, "%d/%d overlay UI wiring checks failed\n", gFailures, gChecks);

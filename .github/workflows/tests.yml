@@ -389,3 +389,37 @@ jobs:
             tests/GPSLabSchedulerTests.m Source/GPSLabScheduler.m Source/GPSLabSchedulerCore.c \
             Source/GPSLabProfile.m Source/GPSLabTypes.m Source/GPSLabProfileCore.c -o /tmp/gpslab-scheduler-tests
           /tmp/gpslab-scheduler-tests
+
+  protected-string-tests:
+    name: Protected client literals (portable C + manifest)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify the generated header is in sync with the manifest
+        shell: bash
+        run: python3 scripts/gen_protected_strings.py --check
+
+      - name: Compile and run portable protected-string tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -I Source tests/gpslab_protected_strings_test.c Source/GPSLabProtectedStringCore.c \
+            -o /tmp/gpslab_protected_strings_test
+          /tmp/gpslab_protected_strings_test
+
+      - name: Audit DEV-readable / PRODUCTION-protected macro semantics
+        shell: bash
+        run: python3 scripts/audit_protected_strings.py
+
+  ci-report-tests:
+    name: CI production report (fixture audits + negative cases)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run fixture-based reporter tests
+        shell: bash
+        run: python3 tests/test_ci_production_report.py

@@ -12,10 +12,13 @@
 #import <UIKit/UIKit.h>
 #endif
 
+#import "GPSLabProtectedString.h"
+
 NSNotificationName const GPSLabLanguageDidChangeNotification = @"com.gpslab.language.didChange";
 
-static NSString * const kGPSLabLanguageSuiteName = @"com.gpslab.runtime";
-static NSString * const kGPSLabLanguageDefaultsKey = @"GPSLab.language";
+// Client-only storage namespace/key: decoded in PRODUCTION, readable in DEV.
+#define kGPSLabLanguageSuiteName GPSLAB_PROTECTED_STRING(DefaultsSuite)
+#define kGPSLabLanguageDefaultsKey GPSLAB_PROTECTED_STRING(LanguageDefaultsKey)
 
 @implementation GPSLabLocalization
 

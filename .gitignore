@@ -17,6 +17,17 @@ build/
 packages/
 scripts/tmp/
 
+# Python tooling caches (scripts/*.py)
+__pycache__/
+*.pyc
+
+# Generated CI release reports: uploaded as CI artifacts, never committed.
+# (RELEASE_PROTECTION_REPORT.md is the tracked baseline; the .ci.md variant and
+# the production report are generated from the actual build on each run.)
+GPSLab-production-report.json
+GPSLab-production-report.md
+RELEASE_PROTECTION_REPORT.ci.md
+
 # Editor / OS noise
 .DS_Store
 Thumbs.db

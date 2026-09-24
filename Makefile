@@ -4,6 +4,26 @@
 ARCHS = arm64
 TARGET = iphone:clang:latest:16.0
 
+# ---------------------------------------------------------------------------
+# Build mode: DEV (default) or PRODUCTION.
+#
+#   DEV         (default) readable + debuggable: Theos debug schema stays on
+#               (DEBUG=1 -> -DDEBUG -O0 -ggdb), full debug symbols, no strip.
+#               A plain `make` never produces a hardened release artifact.
+#   PRODUCTION  hardened release artifact: hidden visibility, no compiler
+#               ident, no DWARF/STABS, no local symbols, NDEBUG (no asserts),
+#               plus link-time symbol stripping. Release pipelines must select
+#               it explicitly:
+#
+#                   make MODE=production
+#
+# The mode -> flag mapping lives in scripts/build_mode.mk so it can be audited
+# for BOTH modes without an iOS toolchain (scripts/audit_build_modes.sh). The
+# canonical Source/ tree is never modified or obfuscated.
+# ---------------------------------------------------------------------------
+GPSLAB_ROOT := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+include $(GPSLAB_ROOT)/scripts/build_mode.mk
+
 include $(THEOS)/makefiles/common.mk
 
 LIBRARY_NAME = GPSLab
@@ -14,6 +34,8 @@ GPSLab_FILES = \
 	Source/GPSLabSelectionPolicyCore.c \
 	Source/GPSLabSchedulerCore.c \
 	Source/GPSLabLocalizationCore.c \
+	Source/GPSLabProtectedStringCore.c \
+	Source/GPSLabProtectedString.m \
 	Source/GPSLabLocalization.m \
 	Source/GPSLabAltitudeViewController.m \
 	Source/GPSLabMapLinkCore.c \
@@ -72,7 +94,8 @@ GPSLab_FILES = \
 	Source/GPSLabRuntime.m \
 	Source/dylib_init.m
 
-GPSLab_CFLAGS = -fobjc-arc -Wall -Wextra
+GPSLab_CFLAGS = -fobjc-arc -Wall -Wextra $(GPSLAB_MODE_CFLAGS)
+GPSLab_LDFLAGS = $(GPSLAB_MODE_LDFLAGS)
 GPSLab_FRAMEWORKS = Foundation CoreLocation UIKit MapKit Security CoreBluetooth NetworkExtension
 
 GPSLab_INSTALL_PATH = @executable_path/Frameworks

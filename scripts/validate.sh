@@ -38,7 +38,12 @@ grep -q 'GPSLab_CFLAGS = -fobjc-arc' "$MAKEFILE" || fail "ARC flag missing from 
 grep -q 'Foundation CoreLocation UIKit MapKit' "$MAKEFILE" || fail "expected frameworks missing"
 grep -q 'GPSLab_INSTALL_PATH = @executable_path/Frameworks' "$MAKEFILE" \
     || fail "install path must be @executable_path/Frameworks"
-pass "Makefile declares arm64/iOS16/ARC/frameworks/install path"
+grep -q 'scripts/build_mode.mk' "$MAKEFILE" \
+    || fail "the Makefile must include scripts/build_mode.mk (DEV/PRODUCTION selector)"
+if grep -qE '^[[:space:]]*DEBUG[[:space:]]*=' "$MAKEFILE"; then
+    fail "the Makefile must not hardcode DEBUG; the build-mode mapping owns it"
+fi
+pass "Makefile declares arm64/iOS16/ARC/frameworks/install path + build-mode selector"
 
 # Every .m file on disk must be compiled.
 echo "== Source coverage =="
@@ -702,8 +707,10 @@ grep -q -F "GPSLabSelectionDistanceMeters" "$SOURCE_DIR/GPSLabStore.m" \
     || fail "store must use the shared geodesic duplicate tolerance"
 grep -q -F "GPSLabProfileAltitudeValid" "$SOURCE_DIR/GPSLabStore.m" \
     || fail "store must reject an invalid bookmark altitude before serializing"
-grep -q -F 'kGPSLabKeyPendingSelection = @"GPSLab.pendingSelection"' "$SOURCE_DIR/GPSLabStore.m" \
-    || fail "pending draft key must be exactly GPSLab.pendingSelection"
+grep -q -F 'kGPSLabKeyPendingSelection GPSLAB_PROTECTED_STRING(PendingSelectionKey)' "$SOURCE_DIR/GPSLabStore.m" \
+    || fail "pending draft key must use the protected PendingSelectionKey literal"
+grep -q -F 'GPSLAB_STRING(PendingSelectionKey, "GPSLab.pendingSelection")' "$SOURCE_DIR/GPSLabProtectedStrings.def" \
+    || fail "pending draft key must be exactly GPSLab.pendingSelection in the manifest"
 grep -q -F "initWithUserDefaults:" "$SOURCE_DIR/GPSLabStore.m" \
     || fail "store must expose an isolated defaults initializer seam"
 grep -q -F "savePendingSelection:" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
@@ -1060,8 +1067,10 @@ pass "localized Done accessory, safe background tap and scoped form end editing 
 
 # Map style: persisted UI preference (missing/invalid => Satellite), no schema
 # change, and snapshots that match the selected style.
-grep -q -F 'kGPSLabKeyMapStyle = @"GPSLab.mapStyle"' "$STORE" \
-    || fail "the store must persist the exact GPSLab.mapStyle key"
+grep -q -F 'kGPSLabKeyMapStyle GPSLAB_PROTECTED_STRING(MapStyleKey)' "$STORE" \
+    || fail "the store must persist the exact GPSLab.mapStyle key via the protected literal"
+grep -q -F 'GPSLAB_STRING(MapStyleKey, "GPSLab.mapStyle")' "$SOURCE_DIR/GPSLabProtectedStrings.def" \
+    || fail "the map-style key must be exactly GPSLab.mapStyle in the manifest"
 grep -q -F -- "- (GPSLabMapStyle)loadMapStyle;" "$SOURCE_DIR/GPSLabStore.h" \
     || fail "the store must expose loadMapStyle"
 grep -q -F -- "- (void)saveMapStyle:(GPSLabMapStyle)style;" "$SOURCE_DIR/GPSLabStore.h" \
@@ -1082,5 +1091,42 @@ if grep -q -F 'kGPSLabKeyMapStyle' "$SOURCE_DIR/GPSLabConfiguration.m" \
     fail "the map style must never enter the configuration/profile schema"
 fi
 pass "map style is a persisted UI preference with matching snapshots and no schema change"
+
+# ------------------------------------------- Protected client literals --------
+echo "== Production-only protected client literals =="
+PROTECTED_MANIFEST="$SOURCE_DIR/GPSLabProtectedStrings.def"
+PROTECTED_HEADER="$SOURCE_DIR/GPSLabProtectedStringsGenerated.h"
+PROTECTED_H="$SOURCE_DIR/GPSLabProtectedString.h"
+PROTECTED_M="$SOURCE_DIR/GPSLabProtectedString.m"
+PROTECTED_CORE_C="$SOURCE_DIR/GPSLabProtectedStringCore.c"
+PROTECTED_CORE_H="$SOURCE_DIR/GPSLabProtectedStringCore.h"
+for file in "$PROTECTED_MANIFEST" "$PROTECTED_HEADER" "$PROTECTED_H" "$PROTECTED_M" \
+    "$PROTECTED_CORE_C" "$PROTECTED_CORE_H"; do
+    [[ -f "$file" ]] || fail "protected-string file missing: $(basename "$file")"
+done
+grep -q -F "Source/GPSLabProtectedString.m" "$MAKEFILE" \
+    || fail "protected-string wrapper must be compiled by the Makefile"
+grep -q -F "Source/GPSLabProtectedStringCore.c" "$MAKEFILE" \
+    || fail "protected-string core must be compiled by the Makefile"
+# The decode branch must be selected by the audited production mode, not invented
+# in the source tree.
+grep -q -- '-DGPSLAB_PRODUCTION=1' "$ROOT/scripts/build_mode.mk" \
+    || fail "the production mode must select the protected-string decode branch"
+if grep -q -- '-DGPSLAB_PRODUCTION=1' "$MAKEFILE"; then
+    fail "the protected-string switch must come from scripts/build_mode.mk only"
+fi
+grep -q -F 'GPSLAB_PROTECTED_STRING(DefaultsSuite)' "$SOURCE_DIR/GPSLabStore.m" \
+    || fail "the defaults suite must use the protected-string macro"
+grep -q -F 'GPSLAB_PROTECTED_STRING(MapStyleKey)' "$SOURCE_DIR/GPSLabStore.m" \
+    || fail "the persistence keys must use the protected-string macro"
+# Protected strings must never carry a secret; the manifest is the source of truth.
+if grep -q -i -E 'PRIVATE KEY|password[[:space:]]*=|secret[[:space:]]*=|api[_-]?key' "$PROTECTED_MANIFEST"; then
+    fail "the protected-string manifest must never contain a secret"
+fi
+[[ -f "$ROOT/tests/gpslab_protected_strings_test.c" ]] \
+    || fail "protected-string test missing: tests/gpslab_protected_strings_test.c"
+grep -q -F "gpslab_protected_strings_test.c" "$ROOT/.github/workflows/tests.yml" \
+    || fail "the protected-string test must be run by the tests workflow"
+pass "protected client literals are manifest-driven, compiled and tested"
 
 echo "All GPSLab static checks passed."

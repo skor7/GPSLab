@@ -1,0 +1,185 @@
+name: KeychainFix release (optional, same-repo private input only)
+
+# Produces a hardened KeychainFix-production-dylib from an ALREADY-VERIFIED
+# KeychainFix.dylib. This is intentionally separate from the GPSLab build and
+# never blocks it.
+#
+# Input provenance / privacy
+# --------------------------
+# The input is supplied as a GitHub artifact already attached to a run in THIS
+# repository. Whether that artifact is non-public depends ENTIRELY on whether
+# this repository is private: artifacts of a PUBLIC repository are PUBLIC. This
+# workflow therefore refuses to download-and-publish on a public repository, so
+# the operator's private binary can never be published to a public repo. It never
+# fetches a binary from a public URL or public file host.
+#
+# If no input run id is provided, the workflow does nothing and exits
+# successfully (GPSLab stays unblocked), reporting BLOCKED_BY_MISSING_INPUT. In
+# that case, or when the repository is public, run
+# `bash scripts/keychainfix_release.sh <verified KeychainFix.dylib>` locally on a
+# macOS host with the Xcode command line tools.
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: 'Run ID (in THIS repo) that uploaded the verified KeychainFix artifact. Empty = BLOCKED_BY_MISSING_INPUT no-op.'
+        required: false
+        default: ''
+      artifact_name:
+        description: 'Name of the same-repo artifact containing KeychainFix.dylib'
+        required: false
+        default: 'KeychainFix-verified'
+      expect_sha256:
+        description: 'Optional expected SHA-256 of the verified input (recommended)'
+        required: false
+        default: ''
+      allow_invalidate_signature:
+        description: 'Set to 1 only if the verified input is code-signed and you accept an unsigned result that must be re-signed'
+        required: false
+        default: '0'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  release:
+    name: KeychainFix protected artifact (macOS)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: BLOCKED_BY_MISSING_INPUT (no input supplied)
+        if: inputs.source_run_id == ''
+        shell: bash
+        run: |
+          {
+            echo "::notice title=KeychainFix input required::BLOCKED_BY_MISSING_INPUT - no same-repo artifact run id was provided; nothing to release."
+            echo "## KeychainFix release: BLOCKED_BY_MISSING_INPUT"
+            echo ""
+            echo "No same-repo artifact run id was supplied, so this workflow performed no release and did not fail."
+            echo "GPSLab is unaffected."
+            echo ""
+            echo "Choose ONE of these safe input paths:"
+            echo "1. Re-run this workflow with \`source_run_id\` set to a run in THIS repository that"
+            echo "   uploaded a \`KeychainFix-verified\` artifact (upload it with \`actions/upload-artifact\`)."
+            echo "   This only keeps the input non-public if this repository is private."
+            echo "2. Run \`bash scripts/keychainfix_release.sh <verified KeychainFix.dylib>\` locally on macOS."
+            echo ""
+            echo "This workflow never downloads from a public URL or public file host."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Refuse to publish from a public repository
+        if: inputs.source_run_id != '' && github.event.repository.private != true
+        shell: bash
+        run: |
+          {
+            echo "::error title=KeychainFix privacy guard::BLOCKED - this repository is not private, so same-repo artifacts are public and the private input must not be published here."
+            echo "## KeychainFix release: BLOCKED (repository is not private)"
+            echo ""
+            echo "This workflow downloads a private KeychainFix input from a same-repo artifact and"
+            echo "re-uploads the hardened output as an artifact. On a public repository those"
+            echo "artifacts are public, which would publish the operator's private binary."
+            echo "It is therefore refused."
+            echo ""
+            echo "Run \`bash scripts/keychainfix_release.sh <verified KeychainFix.dylib>\` locally on macOS instead."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Download the verified input from a same-repo artifact
+        if: inputs.source_run_id != '' && github.event.repository.private == true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          run-id: ${{ inputs.source_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: keychainfix-input
+
+      - name: Locate KeychainFix.dylib
+        if: inputs.source_run_id != '' && github.event.repository.private == true
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          found="$(find keychainfix-input -type f -name 'KeychainFix.dylib' -print -quit)"
+          if [[ -z "$found" ]]; then
+            echo "::error::the same-repo artifact did not contain KeychainFix.dylib"
+            find keychainfix-input -type f || true
+            exit 1
+          fi
+          echo "path=$found" >> "$GITHUB_OUTPUT"
+          echo "Verified input: $found"
+
+      - name: Produce the hardened release + before/after JSON (fail closed)
+        if: inputs.source_run_id != '' && github.event.repository.private == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The release dylib is written INSIDE a directory that becomes the
+          # `KeychainFix-production-dylib` artifact, so the artifact contains
+          # `KeychainFix-Release.dylib` rather than a file literally named after
+          # the artifact.
+          out_dir="$GITHUB_WORKSPACE/KeychainFix-production-dylib"
+          mkdir -p "$out_dir"
+          args=( "${{ steps.locate.outputs.path }}" \
+                 --out "$out_dir/KeychainFix-Release.dylib" \
+                 --report-json "$GITHUB_WORKSPACE/KeychainFix-production-report.json" )
+          if [[ -n "${{ inputs.expect_sha256 }}" ]]; then
+            args+=( --expect-sha256 "${{ inputs.expect_sha256 }}" )
+          fi
+          if [[ "${{ inputs.allow_invalidate_signature }}" == "1" ]]; then
+            args+=( --allow-invalidate-signature )
+          fi
+          bash scripts/keychainfix_release.sh "${args[@]}"
+
+      - name: Publish identifiers to the summary
+        if: inputs.source_run_id != '' && github.event.repository.private == true
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$GITHUB_WORKSPACE/KeychainFix-production-report.json"
+          {
+            echo "## KeychainFix release"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| input | ${{ steps.locate.outputs.path }} |"
+            echo "| expected sha256 | ${{ inputs.expect_sha256 || 'n/a' }} |"
+            echo "| output | KeychainFix-production-dylib/KeychainFix-Release.dylib |"
+            if [[ -f "$report" ]]; then
+              echo ""
+              echo "| Metric | input | output |"
+              echo "| --- | --- | --- |"
+              python3 - "$report" <<'PY'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          def row(name, key):
+              return "| %s | %s | %s |" % (name, r["input"].get(key), r["output"].get(key))
+          print(row("sha256", "sha256"))
+          print(row("size_bytes", "size_bytes"))
+          print(row("symbols_exported", "symbols_exported"))
+          print(row("symbols_local", "symbols_local"))
+          print(row("min_os", "min_os"))
+          PY
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload KeychainFix production dylib
+        if: inputs.source_run_id != '' && github.event.repository.private == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: KeychainFix-production-dylib
+          path: KeychainFix-production-dylib
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload KeychainFix before/after report (JSON)
+        if: inputs.source_run_id != '' && github.event.repository.private == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: KeychainFix-production-report
+          path: KeychainFix-production-report.json
+          if-no-files-found: error
+          retention-days: 14

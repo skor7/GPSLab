@@ -27,13 +27,74 @@ be configured from inside the host app.
 
 ## Build
 
+GPSLab has two explicit build modes. The canonical `Source/` tree is never
+modified or obfuscated: hardening is entirely a build-time concern that applies
+only to the production artifact.
+
+| Mode | Select with | Purpose |
+| --- | --- | --- |
+| **DEV** (default) | `make` | Readable and debuggable: the Theos debug schema stays on (`DEBUG=1` → `-DDEBUG -O0 -ggdb`), full debug symbols, assertions and diagnostics, no stripping. |
+| **PRODUCTION** | `make MODE=production` | Hardened release artifact: `-fvisibility=hidden`, `-fno-ident`, `-g0`, `-DNDEBUG`, and link-time strip (`-Wl,-x -Wl,-S`). |
+
 ```sh
+# Development (readable, debug symbols, diagnostics):
 make clean
 make
+
+# Release artifact (hardened; REQUIRED for anything shipped):
+make clean
+make MODE=production
 ```
+
+A plain `make` deliberately defaults to DEV, so a hardened release can never be
+produced by accident. Release pipelines must select PRODUCTION explicitly (see
+`.github/workflows/build.yml`). The mode → flag mapping lives in
+`scripts/build_mode.mk` and is audited for **both** modes by
+`scripts/audit_build_modes.sh`; an unknown `MODE` fails the build rather than
+silently falling back.
 
 The product is written to `.theos/obj/GPSLab.dylib` with the install name
 `@executable_path/Frameworks/GPSLab.dylib`.
+
+### CI production build
+
+`.github/workflows/build.yml` builds on a **macOS runner** (Xcode SDK + Theos, no
+Linux apt steps): it builds and audits a **DEV** baseline, then builds
+`make MODE=production`, enforces the arm64 / iOS 16+ / install-name / dependency /
+debug-symbol / leak / secret-scan contract, and uploads:
+
+- `GPSLab-production-dylib` — the production output only;
+- `GPSLab-production-report` — a machine-readable JSON report and a Markdown report
+  generated from the **actual** built artifacts (`scripts/ci_production_report.py`),
+  including full SHA-256, size and the DEV-vs-PRODUCTION symbol/string comparison.
+
+No metric in that report is hardcoded; regenerate it from a real build rather than
+quoting fixed numbers.
+
+Before shipping, gate the artifact:
+
+```sh
+bash scripts/release_protection.sh .theos/obj/GPSLab.dylib
+```
+
+This is the release-artifact gate. A DEV build fails it (it carries source
+STABS, local symbols and developer build paths), so an unhardened dylib can
+never be mistaken for a release. Build-time identifier/string hygiene
+(`-fno-ident`, `-g0`, `-DNDEBUG`) is production-only. Literal string-literal
+obfuscation is intentionally **not** implemented: it would require modifying or
+post-processing the readable canonical source, which is out of scope.
+
+The separate KeychainFix release is intentionally **not** part of this build. It
+is an optional workflow (`.github/workflows/keychainfix-release.yml`) that
+consumes an already-verified `KeychainFix.dylib` supplied as a **same-repository
+artifact**, and **only when this repository is private** (artifacts of a public
+repository are public, so it refuses to download-and-publish there). It never
+downloads from a public URL or file host and never blocks the GPSLab build. When
+no input is supplied it is a no-op (`BLOCKED_BY_MISSING_INPUT`) and the operator
+runs `scripts/keychainfix_release.sh` locally on macOS instead. On success it
+uploads a `KeychainFix-production-dylib` artifact containing
+`KeychainFix-Release.dylib`, plus a `KeychainFix-production-report` JSON with the
+real before/after hash, size and symbol counts.
 
 Then:
 

@@ -1,0 +1,32 @@
+# GPSLab protected client literals (manifest).
+#
+# One entry per implementation-revealing CLIENT literal that must stay readable
+# in DEV but must not appear verbatim in the PRODUCTION artifact.
+#
+#   GPSLAB_STRING(Symbol, "plaintext")
+#
+# Scope rules (see scripts/audit_protected_strings.py):
+#   * client-only implementation detail: storage namespaces and persistence keys
+#     that reveal the on-device layout;
+#   * NOT user-facing UI/legal copy and NOT localization catalog keys;
+#   * NOT Objective-C selectors, class/method names, notification names or
+#     error-domain symbols that are part of the runtime/exported API contract.
+#     A value that is also a selector name is excluded: selector names stay in
+#     __objc_methname, so protecting such a value would remove nothing.
+#
+# The plaintext is the single source of truth for scripts/gen_protected_strings.py,
+# which emits Source/GPSLabProtectedStringsGenerated.h. This file is never shipped
+# in a binary; the production artifact carries only the encoded blobs.
+#
+# Never add a secret here: the generator refuses secret-like literals.
+
+GPSLAB_STRING(DefaultsSuite, "com.gpslab.runtime")
+GPSLAB_STRING(PendingSelectionKey, "GPSLab.pendingSelection")
+GPSLAB_STRING(ConfigurationKey, "GPSLab.configuration")
+GPSLAB_STRING(BookmarksKey, "GPSLab.bookmarks")
+GPSLAB_STRING(RecentsKey, "GPSLab.recents")
+GPSLAB_STRING(CommittedSelectionKey, "GPSLab.committedSelection")
+GPSLAB_STRING(MapStyleKey, "GPSLab.mapStyle")
+GPSLAB_STRING(LanguageDefaultsKey, "GPSLab.language")
+GPSLAB_STRING(WiFiSimulationKey, "GPSLab.simulation.wifi.enabled")
+GPSLAB_STRING(BluetoothSimulationKey, "GPSLab.simulation.bluetooth.enabled")

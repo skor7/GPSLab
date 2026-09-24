@@ -14,21 +14,23 @@
 
 #import "GPSLabGeodesy.h"
 #import "GPSLabProfileCore.h"
+#import "GPSLabProtectedString.h"
 #import "GPSLabSelectionPolicyCore.h"
 
-static NSString * const kGPSLabSuiteName = @"com.gpslab.runtime";
-static NSString * const kGPSLabKeyConfiguration = @"GPSLab.configuration";
-static NSString * const kGPSLabKeyBookmarks = @"GPSLab.bookmarks";
-static NSString * const kGPSLabKeyRecents = @"GPSLab.recents";
+// Client-only storage namespace/keys: decoded in PRODUCTION, readable in DEV.
+#define kGPSLabSuiteName GPSLAB_PROTECTED_STRING(DefaultsSuite)
+#define kGPSLabKeyConfiguration GPSLAB_PROTECTED_STRING(ConfigurationKey)
+#define kGPSLabKeyBookmarks GPSLAB_PROTECTED_STRING(BookmarksKey)
+#define kGPSLabKeyRecents GPSLAB_PROTECTED_STRING(RecentsKey)
 // The pending preview draft is persisted separately from the configuration so a
 // preview can survive a close/background without ever being applied.
-static NSString * const kGPSLabKeyPendingSelection = @"GPSLab.pendingSelection";
+#define kGPSLabKeyPendingSelection GPSLAB_PROTECTED_STRING(PendingSelectionKey)
 // The committed-selection receipt stores the coordinate (not a boolean) so a
 // stale nonzero receipt can never authorize a later reset-to-(0,0).
-static NSString * const kGPSLabKeyCommittedSelection = @"GPSLab.committedSelection";
+#define kGPSLabKeyCommittedSelection GPSLAB_PROTECTED_STRING(CommittedSelectionKey)
 // A persisted UI preference (foreground map style); never part of the profile
 // schema or the synthetic configuration.
-static NSString * const kGPSLabKeyMapStyle = @"GPSLab.mapStyle";
+#define kGPSLabKeyMapStyle GPSLAB_PROTECTED_STRING(MapStyleKey)
 
 static NSString * const kGPSLabBookmarkName = @"name";
 static NSString * const kGPSLabBookmarkLatitude = @"latitude";

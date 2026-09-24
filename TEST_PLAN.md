@@ -31,8 +31,11 @@ Swift, no manual `retain/release`, diagnostics never receive coordinates.
 
 The workflow must:
 
-- [ ] Run the `static` job successfully.
-- [ ] Build `GPSLab.dylib` with Theos on `ubuntu-22.04`.
+- [ ] Run the `static` job successfully, including the both-mode audit
+      (`scripts/audit_build_modes.sh`) and the release-protection static checks.
+- [ ] Build `GPSLab.dylib` with Theos on `ubuntu-22.04` **in PRODUCTION mode**
+      (`make MODE=production`), then pass the release-artifact gate
+      (`scripts/release_protection.sh <dylib>`) so a dev build cannot ship.
 - [ ] Prove `arch: arm64`.
 - [ ] Prove `install_name: @executable_path/Frameworks/GPSLab.dylib`.
 - [ ] Prove `min_os: 16.x` from `LC_BUILD_VERSION`/`LC_VERSION_MIN_IPHONEOS`.
