@@ -28,6 +28,14 @@ NS_ASSUME_NONNULL_BEGIN
 + (BOOL)isBluetoothEnabled;
 + (void)setBluetoothEnabled:(BOOL)enabled;
 
+/**
+ * VPN interface masking (ported standalone VPNMask). Default Disabled; while
+ * Disabled the getifaddrs hook is a pure pass-through. Persisted immediately and
+ * restored on the next launch; the runtime hook is refreshed on every change.
+ */
++ (BOOL)isVPNEnabled;
++ (void)setVPNEnabled:(BOOL)enabled;
+
 /** Installs public-API host-process interception. Safe to call repeatedly. */
 + (BOOL)installRuntimeHooks;
 

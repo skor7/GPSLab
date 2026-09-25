@@ -1236,6 +1236,8 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
                                                 subtitleKey:@"sim.wifi.subtitle" action:@selector(wifiSettingsTapped)]];
     [group addArrangedSubview:[self simulationRowWithIcon:@"ᛒ" titleKey:@"sim.ble.title"
                                                 subtitleKey:@"sim.ble.subtitle" action:@selector(bleSettingsTapped)]];
+    [group addArrangedSubview:[self simulationRowWithIcon:@"⇄" titleKey:@"sim.vpn.title"
+                                                subtitleKey:@"sim.vpn.subtitle" action:@selector(vpnSettingsTapped)]];
     return group;
 }
 
@@ -2306,6 +2308,14 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         }
         return [strongSelf attachWiFi:nil bluetooth:config];
     };
+    [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:sheet completion:nil];
+}
+
+- (void)vpnSettingsTapped {
+    // Enable/disable-only section: the sheet auto-saves the toggle through
+    // GPSLabSimulationRegistry, so there is no profile attach/save handler.
+    GPSLabSimulationSettingsViewController *sheet = [[GPSLabSimulationSettingsViewController alloc] init];
+    sheet.kind = GPSLabSimulationKindVPN;
     [[GPSLabModalCoordinator sharedCoordinator] presentSheetRoot:sheet completion:nil];
 }
 

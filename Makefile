@@ -59,6 +59,7 @@ GPSLab_FILES = \
 	Source/GPSLabSimulationRegistry.m \
 	Source/GPSLabBluetoothRuntime.m \
 	Source/GPSLabWiFiRuntime.m \
+	Source/VPNMask/GPSLabVPNMaskHook.m \
 	Source/GPSLabProfileApplicationCoordinator.m \
 	Source/GPSLabEngineProfileBackend.m \
 	Source/GPSLabScheduler.m \
@@ -102,7 +103,10 @@ GPSLab_FILES = \
 	Source/GPSLabRuntime.m \
 	Source/dylib_init.m
 
-GPSLab_CFLAGS = -fobjc-arc -Wall -Wextra $(GPSLAB_MODE_CFLAGS)
+# -ISource keeps the shared headers (fishhook, registry, protected strings)
+# reachable from the Source/VPNMask/ subtree, so the ported hook reuses the single
+# vendored fishhook instead of vendoring a duplicate copy.
+GPSLab_CFLAGS = -fobjc-arc -Wall -Wextra -ISource $(GPSLAB_MODE_CFLAGS)
 GPSLab_LDFLAGS = $(GPSLAB_MODE_LDFLAGS)
 GPSLab_FRAMEWORKS = Foundation CoreLocation UIKit MapKit Security CoreBluetooth NetworkExtension
 

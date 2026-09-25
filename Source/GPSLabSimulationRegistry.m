@@ -16,6 +16,7 @@ static GPSLabProfileBluetoothConfig *gGPSLabActiveBluetoothConfig = nil;
 #define kGPSLabSimulationSuite GPSLAB_PROTECTED_STRING(DefaultsSuite)
 #define kGPSLabWiFiEnabledKey GPSLAB_PROTECTED_STRING(WiFiSimulationKey)
 #define kGPSLabBluetoothEnabledKey GPSLAB_PROTECTED_STRING(BluetoothSimulationKey)
+#define kGPSLabVPNMaskEnabledKey GPSLAB_PROTECTED_STRING(VPNMaskSimulationKey)
 
 @implementation GPSLabSimulationRegistry
 
@@ -43,7 +44,14 @@ static GPSLabProfileBluetoothConfig *gGPSLabActiveBluetoothConfig = nil;
 }
 
 + (NSArray<GPSLabSimulationCapability *> *)capabilities {
-    return @[ self.wifiModule.capability, self.bluetoothModule.capability ];
+    // VPN masking is a pure process-level interface filter: always available and
+    // clearly labelled as a test setting (no config schema, no system change).
+    GPSLabSimulationCapability *vpn =
+        [GPSLabSimulationCapability capabilityWithIdentifier:@"com.gpslab.simulation.vpn"
+                                                availability:GPSLabSimulationAvailabilityAvailable
+                                                    titleKey:@"sim.vpn.title"
+                                                  reasonKey:nil];
+    return @[ self.wifiModule.capability, self.bluetoothModule.capability, vpn ];
 }
 
 + (void)activateWiFiConfig:(nullable GPSLabProfileWiFiConfig *)config {
@@ -86,9 +94,34 @@ static GPSLabProfileBluetoothConfig *gGPSLabActiveBluetoothConfig = nil;
     [[self simulationDefaults] setBool:enabled forKey:kGPSLabBluetoothEnabledKey];
 }
 
+// The VPN hook lives in a separate translation unit and is reached through the
+// runtime (never imported), so the registry keeps no link-time dependency on it.
+// The change is pushed to the hook's lock-free gate after it is persisted.
++ (void)notifyVPNRuntimeEnabled:(BOOL)enabled {
+    SEL selector = NSSelectorFromString(@"setRuntimeEnabled:");
+    Class hookClass = NSClassFromString(@"GPSLabVPNMaskHook");
+    if (hookClass == Nil || ![hookClass respondsToSelector:selector]) {
+        return;
+    }
+    void (*invoke)(id, SEL, BOOL) = (void (*)(id, SEL, BOOL))[hookClass methodForSelector:selector];
+    if (invoke != NULL) {
+        invoke(hookClass, selector, enabled);
+    }
+}
+
++ (BOOL)isVPNEnabled {
+    return [[self simulationDefaults] boolForKey:kGPSLabVPNMaskEnabledKey];
+}
+
++ (void)setVPNEnabled:(BOOL)enabled {
+    [[self simulationDefaults] setBool:enabled forKey:kGPSLabVPNMaskEnabledKey];
+    [self notifyVPNRuntimeEnabled:enabled];
+}
+
 + (BOOL)installRuntimeHooks {
     BOOL bluetooth = NO;
     BOOL wifi = NO;
+    BOOL vpn = NO;
     SEL selector = NSSelectorFromString(@"installHooks");
 
     Class bluetoothClass = NSClassFromString(@"GPSLabBluetoothRuntime");
@@ -103,9 +136,15 @@ static GPSLabProfileBluetoothConfig *gGPSLabActiveBluetoothConfig = nil;
         wifi = invoke != NULL ? invoke(wifiClass, selector) : NO;
     }
 
-    // One unavailable public API must not prevent the other simulation module
+    Class vpnClass = NSClassFromString(@"GPSLabVPNMaskHook");
+    if (vpnClass != Nil && [vpnClass respondsToSelector:selector]) {
+        BOOL (*invoke)(id, SEL) = (BOOL (*)(id, SEL))[vpnClass methodForSelector:selector];
+        vpn = invoke != NULL ? invoke(vpnClass, selector) : NO;
+    }
+
+    // One unavailable public API must not prevent the other simulation modules
     // from functioning; installation succeeds when at least one hook set exists.
-    return bluetooth || wifi;
+    return bluetooth || wifi || vpn;
 }
 
 @end

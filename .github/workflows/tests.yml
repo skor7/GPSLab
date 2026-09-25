@@ -408,6 +408,27 @@ jobs:
             -o /tmp/gpslab-simulation-tests
           /tmp/gpslab-simulation-tests
 
+  vpn-mask-wiring-tests:
+    name: VPN interface masking wiring (portable C, source-validated)
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile and run VPNMask integration assertions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -Wall -Wextra -I Source tests/gpslab_vpn_mask_test.c \
+            -o /tmp/gpslab_vpn_mask_test
+          /tmp/gpslab_vpn_mask_test
+
+      - name: Verify the non-compiled reference copies (pinned hashes)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tests/test_vpn_mask_reference.py
+
   scheduler-core-tests:
     name: Scheduler policy core (portable C)
     runs-on: ubuntu-22.04

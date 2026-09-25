@@ -53,8 +53,11 @@ while IFS= read -r file; do
     relative="${relative//\\//}"
     grep -q -F "$relative \\\\" "$MAKEFILE" || grep -q -F "$relative" "$MAKEFILE" \
         || fail "source file not listed in Makefile: $relative"
-done < <(find "$SOURCE_DIR" -name '*.m' -type f)
-pass "every source file is compiled by the Makefile"
+# Source/VPNMask/reference/ holds byte-for-byte, READ-ONLY provenance copies of
+# the standalone VPNMask-Builder files. They are deliberately NOT compiled; the
+# guard below and tests/test_vpn_mask_reference.py prove that.
+done < <(find "$SOURCE_DIR" -name '*.m' -type f -not -path '*/VPNMask/reference/*')
+pass "every source file is compiled by the Makefile (excluding non-compiled reference copies)"
 
 # ------------------------------------------------- Shared helper imports ------
 echo "== Shared helper declaration imports =="
@@ -1310,5 +1313,79 @@ grep -q -F "deviceSecret FAILS CLOSED" "$PORTAL_WIRING_TEST" \
 grep -q -F "sets Cache-Control exactly once" "$PORTAL_WIRING_TEST" \
     || fail "the portal wiring test must assert a single Cache-Control header"
 pass "device secret fails closed; device client sets Cache-Control once; static test asserts both"
+
+# ---------------------------------------------- VPN interface masking port -----
+echo "== VPN interface masking port =="
+VPN_H="$SOURCE_DIR/VPNMask/GPSLabVPNMaskHook.h"
+VPN_M="$SOURCE_DIR/VPNMask/GPSLabVPNMaskHook.m"
+[[ -f "$VPN_H" ]] || fail "VPNMask port header missing"
+[[ -f "$VPN_M" ]] || fail "VPNMask port implementation missing"
+grep -q -F "Source/VPNMask/GPSLabVPNMaskHook.m" "$MAKEFILE" \
+    || fail "the VPNMask port must be compiled by the Makefile"
+# The shared vendored fishhook is reused; no duplicate implementation/symbols.
+if [[ "$(grep -v '^[[:space:]]*#' "$MAKEFILE" | grep -c -F 'Source/fishhook.c')" != "1" ]]; then
+    fail "exactly one fishhook implementation must be compiled"
+fi
+if grep -q -F "Source/VPNMask/fishhook" "$MAKEFILE"; then
+    fail "the VPNMask port must not vendor a second fishhook"
+fi
+grep -q -F '#import "fishhook.h"' "$VPN_M" \
+    || fail "the VPNMask port must reuse the shared fishhook header"
+# READ-ONLY provenance: the three standalone bytes are kept under reference/ and
+# are never compiled. Only the shared Source/fishhook.c and the namespaced port
+# may enter the build.
+VPN_REF="$SOURCE_DIR/VPNMask/reference"
+for ref in VPNMask.m fishhook.c fishhook.h; do
+    [[ -f "$VPN_REF/$ref" ]] || fail "reference copy missing: Source/VPNMask/reference/$ref"
+done
+if grep -q -F "Source/VPNMask/VPNMask.m" "$MAKEFILE"; then
+    fail "the reference VPNMask.m must never be compiled"
+fi
+if grep -q -F "VPNMask/reference" "$MAKEFILE"; then
+    fail "the reference directory must never be compiled"
+fi
+# Preserved standalone semantics.
+for token in 'strncmp(name, "tun", 3)' 'strncmp(name, "utun", 4)' \
+    'strncmp(name, "ppp", 3)' 'strncmp(name, "tap", 3)' 'strncmp(name, "ipsec", 5)' \
+    "int ret = gGPSLabOriginalGetifaddrs(ifap);" \
+    "if (ret != 0 || ifap == NULL || *ifap == NULL)"; do
+    grep -q -F "$token" "$VPN_M" || fail "VPNMask port is missing preserved token: $token"
+done
+# Explicit, exactly-once install (NOT a constructor) seeded from persistence.
+if grep -q -F "__attribute__((constructor))" "$VPN_M"; then
+    fail "the VPNMask port must not install itself from a constructor"
+fi
+grep -q -F "dispatch_once(&onceToken" "$VPN_M" \
+    || fail "the VPNMask install must be exactly-once"
+grep -q -F "setRuntimeEnabled:[GPSLabSimulationRegistry isVPNEnabled]" "$VPN_M" \
+    || fail "the VPNMask gate must be seeded from the persisted preference"
+if grep -q -F "NSUserDefaults" "$VPN_M"; then
+    fail "the VPNMask hook must not read NSUserDefaults on its hot path"
+fi
+# The toggle defaults to Disabled, is protected, and is pushed to the hook.
+grep -q -F "static atomic_bool gGPSLabVPNMaskEnabled = false;" "$VPN_M" \
+    || fail "the VPNMask gate must default to Disabled"
+grep -q -F 'kGPSLabVPNMaskEnabledKey GPSLAB_PROTECTED_STRING(VPNMaskSimulationKey)' \
+    "$SOURCE_DIR/GPSLabSimulationRegistry.m" \
+    || fail "the VPN toggle must persist under the protected key"
+grep -q -F 'GPSLAB_STRING(VPNMaskSimulationKey, "GPSLab.simulation.vpn.enabled")' \
+    "$SOURCE_DIR/GPSLabProtectedStrings.def" \
+    || fail "the VPN key must be exactly GPSLab.simulation.vpn.enabled in the manifest"
+grep -q -F "+ (BOOL)isVPNEnabled;" "$SOURCE_DIR/GPSLabSimulationRegistry.h" \
+    || fail "the registry must expose isVPNEnabled"
+grep -q -F "+ (void)setVPNEnabled:(BOOL)enabled;" "$SOURCE_DIR/GPSLabSimulationRegistry.h" \
+    || fail "the registry must expose setVPNEnabled:"
+grep -q -F "setVPNEnabled:self.simulationSwitch.on" \
+    "$SOURCE_DIR/GPSLabSimulationSettingsViewController.m" \
+    || fail "the VPN switch must auto-save on change"
+grep -q -F "vpnSettingsTapped" "$SOURCE_DIR/GPSLabOverlayViewController.m" \
+    || fail "the overlay must expose the VPN settings action"
+grep -q -F "GPSLabSimulationKindVPN" "$SOURCE_DIR/GPSLabSimulationSettingsViewController.h" \
+    || fail "the VPN simulation kind must be defined"
+[[ -f "$ROOT/tests/gpslab_vpn_mask_test.c" ]] \
+    || fail "VPNMask test missing: tests/gpslab_vpn_mask_test.c"
+grep -q -F "gpslab_vpn_mask_test.c" "$ROOT/.github/workflows/tests.yml" \
+    || fail "the VPNMask test must be run by the tests workflow"
+pass "VPNMask port reuses the single fishhook, is toggle-gated, exactly-once and tested"
 
 echo "All GPSLab static checks passed."

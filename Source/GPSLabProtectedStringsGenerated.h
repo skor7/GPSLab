@@ -35,6 +35,7 @@
 #define GPSLAB_PROTECTED_STRING_LanguageDefaultsKey (@"GPSLab.language")
 #define GPSLAB_PROTECTED_STRING_WiFiSimulationKey (@"GPSLab.simulation.wifi.enabled")
 #define GPSLAB_PROTECTED_STRING_BluetoothSimulationKey (@"GPSLab.simulation.bluetooth.enabled")
+#define GPSLAB_PROTECTED_STRING_VPNMaskSimulationKey (@"GPSLab.simulation.vpn.enabled")
 
 #define GPSLAB_PROTECTED_STRING(symbol) GPSLAB_PROTECTED_STRING_##symbol
 
@@ -111,6 +112,13 @@ static const unsigned char kGPSLabProtected_BluetoothSimulationKey[] __attribute
 };
 static const unsigned char kGPSLabProtectedKey_BluetoothSimulationKey __attribute__((unused)) = 0x15;
 
+static const unsigned char kGPSLabProtected_VPNMaskSimulationKey[] __attribute__((unused)) = {
+    0xC0, 0xD7, 0xD4, 0xCB, 0xE6, 0xE5, 0xA9, 0xF4, 0xEE, 0xEA, 0xF2, 0xEB,
+    0xE6, 0xF3, 0xEE, 0xE8, 0xE9, 0xA9, 0xF1, 0xF7, 0xE9, 0xA9, 0xE2, 0xE9,
+    0xE6, 0xE5, 0xEB, 0xE2, 0xE3,
+};
+static const unsigned char kGPSLabProtectedKey_VPNMaskSimulationKey __attribute__((unused)) = 0x87;
+
 #if defined(GPSLAB_PROTECTED_STRING_TEST)
 
 typedef struct {
@@ -133,6 +141,7 @@ static const GPSLabProtectedStringCase kGPSLabProtectedStringCases[] __attribute
     { "LanguageDefaultsKey", kGPSLabProtected_LanguageDefaultsKey, sizeof(kGPSLabProtected_LanguageDefaultsKey), kGPSLabProtectedKey_LanguageDefaultsKey, "GPSLab.language" },
     { "WiFiSimulationKey", kGPSLabProtected_WiFiSimulationKey, sizeof(kGPSLabProtected_WiFiSimulationKey), kGPSLabProtectedKey_WiFiSimulationKey, "GPSLab.simulation.wifi.enabled" },
     { "BluetoothSimulationKey", kGPSLabProtected_BluetoothSimulationKey, sizeof(kGPSLabProtected_BluetoothSimulationKey), kGPSLabProtectedKey_BluetoothSimulationKey, "GPSLab.simulation.bluetooth.enabled" },
+    { "VPNMaskSimulationKey", kGPSLabProtected_VPNMaskSimulationKey, sizeof(kGPSLabProtected_VPNMaskSimulationKey), kGPSLabProtectedKey_VPNMaskSimulationKey, "GPSLab.simulation.vpn.enabled" },
 };
 
 #define GPSLAB_PROTECTED_STRING_CASE_COUNT \

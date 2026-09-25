@@ -21,11 +21,13 @@ static int gChecks = 0;
 
 static void test_capabilities(void) {
     NSArray<GPSLabSimulationCapability *> *capabilities = [GPSLabSimulationRegistry capabilities];
-    CHECK(capabilities.count == 2, @"two simulation capabilities registered");
+    CHECK(capabilities.count == 3, @"three simulation capabilities registered");
     CHECK([capabilities[0].identifier isEqualToString:@"com.gpslab.simulation.wifi"],
           @"wifi capability identifier");
     CHECK([capabilities[1].identifier isEqualToString:@"com.gpslab.simulation.bluetooth"],
           @"bluetooth capability identifier");
+    CHECK([capabilities[2].identifier isEqualToString:@"com.gpslab.simulation.vpn"],
+          @"vpn capability identifier");
     for (GPSLabSimulationCapability *capability in capabilities) {
         CHECK(capability.availability == GPSLabSimulationAvailabilityAvailable,
               @"host-app simulation modules are available");
@@ -131,12 +133,35 @@ static void test_master_controls_and_active_configs(void) {
     [GPSLabSimulationRegistry setBluetoothEnabled:oldBluetooth];
 }
 
+static void test_vpn_toggle_default_and_persistence(void) {
+    NSUserDefaults *defaults = [[NSUserDefaults alloc] initWithSuiteName:@"com.gpslab.runtime"];
+    NSString *key = @"GPSLab.simulation.vpn.enabled";
+    BOOL oldVPN = [GPSLabSimulationRegistry isVPNEnabled];
+
+    // Default Disabled: an unset preference must read as NO (pure pass-through).
+    [defaults removeObjectForKey:key];
+    CHECK(![GPSLabSimulationRegistry isVPNEnabled],
+          @"vpn defaults to passthrough (Disabled) when never set");
+
+    // The toggle persists immediately (no Save) and reads back from the suite.
+    [GPSLabSimulationRegistry setVPNEnabled:YES];
+    CHECK([GPSLabSimulationRegistry isVPNEnabled], @"vpn enable persists immediately");
+    CHECK([defaults boolForKey:key], @"vpn writes the exact persisted key");
+
+    [GPSLabSimulationRegistry setVPNEnabled:NO];
+    CHECK(![GPSLabSimulationRegistry isVPNEnabled], @"vpn disable persists immediately");
+    CHECK([defaults objectForKey:key] != nil, @"vpn persists an explicit disabled value");
+
+    [GPSLabSimulationRegistry setVPNEnabled:oldVPN];
+}
+
 int main(void) {
     @autoreleasepool {
         test_capabilities();
         test_wifi_validation();
         test_bluetooth_validation();
         test_master_controls_and_active_configs();
+        test_vpn_toggle_default_and_persistence();
     }
 
     if (gFailures == 0) {

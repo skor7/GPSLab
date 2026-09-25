@@ -44,12 +44,32 @@
     return field;
 }
 
+- (NSString *)simulationTitleKey {
+    switch (self.kind) {
+        case GPSLabSimulationKindWiFi: return @"sim.wifi.title";
+        case GPSLabSimulationKindBluetooth: return @"sim.ble.title";
+        case GPSLabSimulationKindVPN: return @"sim.vpn.title";
+    }
+    return @"sim.title";
+}
+
+- (NSString *)simulationNoteKey {
+    return (self.kind == GPSLabSimulationKindVPN) ? @"sim.vpn.note" : @"sim.note";
+}
+
+- (BOOL)simulationEnabledForCurrentKind {
+    switch (self.kind) {
+        case GPSLabSimulationKindWiFi: return [GPSLabSimulationRegistry isWiFiEnabled];
+        case GPSLabSimulationKindBluetooth: return [GPSLabSimulationRegistry isBluetoothEnabled];
+        case GPSLabSimulationKindVPN: return [GPSLabSimulationRegistry isVPNEnabled];
+    }
+    return NO;
+}
+
 - (UIView *)simulationControlRow {
     UIView *row = [[UIView alloc] initWithFrame:CGRectZero];
     self.simulationSwitch = [[UISwitch alloc] initWithFrame:CGRectZero];
-    self.simulationSwitch.on = (self.kind == GPSLabSimulationKindWiFi)
-        ? [GPSLabSimulationRegistry isWiFiEnabled]
-        : [GPSLabSimulationRegistry isBluetoothEnabled];
+    self.simulationSwitch.on = [self simulationEnabledForCurrentKind];
     [self.simulationSwitch addTarget:self
                               action:@selector(simulationSwitchChanged)
                     forControlEvents:UIControlEventValueChanged];
@@ -72,20 +92,23 @@
 }
 
 - (void)simulationSwitchChanged {
+    // VPN is the enable/disable-only section: it auto-saves and refreshes the
+    // runtime hook immediately (no Save). Wi-Fi/Bluetooth persist on Save.
+    if (self.kind == GPSLabSimulationKindVPN) {
+        [GPSLabSimulationRegistry setVPNEnabled:self.simulationSwitch.on];
+    }
     [self updateSimulationStateLabel];
 }
 
 - (void)updateSimulationStateLabel {
     NSString *state = GPSLabLocalized(self.simulationSwitch.on ? @"profiles.value.on" : @"profiles.value.off");
-    NSString *title = (self.kind == GPSLabSimulationKindWiFi)
-        ? GPSLabLocalized(@"sim.wifi.title")
-        : GPSLabLocalized(@"sim.ble.title");
+    NSString *title = GPSLabLocalized([self simulationTitleKey]);
     self.simulationStateLabel.text = [NSString stringWithFormat:@"%@ — %@", title, state];
 }
 
 - (void)buildForm {
     UIStackView *content = self.contentStack;
-    self.noteLabel = [self bodyLabel:GPSLabLocalized(@"sim.note")];
+    self.noteLabel = [self bodyLabel:GPSLabLocalized([self simulationNoteKey])];
 
     [content addArrangedSubview:[self simulationControlRow]];
 
@@ -104,7 +127,7 @@
         [content addArrangedSubview:self.ssidField];
         [content addArrangedSubview:[self fieldLabelWithKey:@"sim.wifi.signal"]];
         [content addArrangedSubview:self.wifiSignalSegment];
-    } else {
+    } else if (self.kind == GPSLabSimulationKindBluetooth) {
         self.nameField = [self plainFieldWithPlaceholder:GPSLabLocalized(@"sim.ble.profileName")
                                                     text:self.bluetoothConfig.profileName];
         self.deviceField = [self plainFieldWithPlaceholder:GPSLabLocalized(@"sim.ble.deviceName")
@@ -124,19 +147,20 @@
         [content addArrangedSubview:[self fieldLabelWithKey:@"sim.ble.pattern"]];
         [content addArrangedSubview:self.patternField];
     }
+    // VPN has no config fields: the toggle auto-saves, so no Save button is shown.
 
-    UIButton *save = [self actionButtonWithTitle:GPSLabLocalized(@"common.save")
-                                          action:@selector(saveTapped)];
-    [content addArrangedSubview:save];
+    if (self.kind != GPSLabSimulationKindVPN) {
+        UIButton *save = [self actionButtonWithTitle:GPSLabLocalized(@"common.save")
+                                              action:@selector(saveTapped)];
+        [content addArrangedSubview:save];
+    }
     [content addArrangedSubview:self.noteLabel];
 }
 
 - (void)gpslab_applyLocalization {
-    self.title = (self.kind == GPSLabSimulationKindWiFi)
-        ? GPSLabLocalized(@"sim.wifi.title")
-        : GPSLabLocalized(@"sim.ble.title");
+    self.title = GPSLabLocalized([self simulationTitleKey]);
     if (self.noteLabel != nil) {
-        self.noteLabel.text = GPSLabLocalized(@"sim.note");
+        self.noteLabel.text = GPSLabLocalized([self simulationNoteKey]);
     }
     if (self.wifiSignalSegment != nil) {
         [self.wifiSignalSegment setTitle:GPSLabLocalized(@"sim.signal.strong") forSegmentAtIndex:0];
@@ -163,6 +187,12 @@
 }
 
 - (void)saveTapped {
+    if (self.kind == GPSLabSimulationKindVPN) {
+        // No Save button is shown for VPN, but keep the action safe if reached.
+        [GPSLabSimulationRegistry setVPNEnabled:self.simulationSwitch.on];
+        [self gpslab_dismissSheet];
+        return;
+    }
     if (self.kind == GPSLabSimulationKindWiFi) {
         GPSLabProfileWiFiConfig *candidate =
             [[GPSLabProfileWiFiConfig alloc] initWithProfileName:self.nameField.text ?: @""

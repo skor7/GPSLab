@@ -15,6 +15,8 @@ NS_ASSUME_NONNULL_BEGIN
 typedef NS_ENUM(NSInteger, GPSLabSimulationKind) {
     GPSLabSimulationKindWiFi = 0,
     GPSLabSimulationKindBluetooth,
+    /** Enable/disable-only section: auto-saved on toggle, no Save button. */
+    GPSLabSimulationKindVPN,
 };
 
 @interface GPSLabSimulationSettingsViewController : GPSLabSheetViewController
