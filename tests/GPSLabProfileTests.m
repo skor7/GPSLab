@@ -167,9 +167,9 @@ static void test_drift_radius_policy(void) {
     CHECK(defaulted != nil && fabs(defaulted.driftRadiusMeters - 5.0) < 1e-9,
           @"missing drift radius defaults to 5 m");
 
-    // The full 0..20 range is accepted and preserved; 0 means the exact base.
+    // The full 0..50 range is accepted and preserved; 0 means the exact base.
     BOOL allInRange = YES;
-    for (double radius = 0.0; radius <= 20.0; radius += 0.5) {
+    for (double radius = 0.0; radius <= 50.0; radius += 0.5) {
         NSMutableDictionary *dict = [ValidProfileDictionary(@"range", @"Range") mutableCopy];
         dict[@"driftRadiusMeters"] = @(radius);
         GPSLabProfile *profile = [GPSLabProfile profileFromDictionary:dict];
@@ -177,7 +177,7 @@ static void test_drift_radius_policy(void) {
             allInRange = NO;
         }
     }
-    CHECK(allInRange, @"every drift radius in [0, 20] is accepted and preserved");
+    CHECK(allInRange, @"every drift radius in [0, 50] is accepted and preserved");
 
     // A present-but-non-finite or non-number radius is still rejected.
     NSMutableDictionary *nan = [ValidProfileDictionary(@"nan", @"NaN") mutableCopy];
@@ -195,17 +195,17 @@ static void test_drift_radius_policy(void) {
               @"radius outside [0, 500] is rejected");
     }
 
-    // Legacy schema values (up to the old 500 m) must LOAD and CLAMP to [0, 20],
+    // Legacy schema values (up to the old 500 m) must LOAD and CLAMP to [0, 50],
     // not drop the profile.
     NSDictionary<NSNumber *, NSNumber *> *legacyClamps = @{
         @(0.0): @(0.0),      // new-schema exact base, preserved
         @(1.0): @(1.0),      // historical minimum, preserved
         @(12.0): @(12.0),    // in both schemas, preserved
-        @(20.0): @(20.0),    // new maximum, preserved
-        @(20.5): @(20.0),    // historical-valid, clamped to the new maximum
-        @(30.0): @(20.0),    // the reviewer's regression case
-        @(100.0): @(20.0),
-        @(500.0): @(20.0),   // historical maximum, clamped
+        @(30.0): @(30.0),    // former regression case, now in range, preserved
+        @(50.0): @(50.0),    // new maximum, preserved
+        @(50.5): @(50.0),    // historical-valid, clamped to the new maximum
+        @(100.0): @(50.0),
+        @(500.0): @(50.0),   // historical maximum, clamped
     };
     for (NSNumber *input in legacyClamps) {
         NSMutableDictionary *dict = [ValidProfileDictionary(@"legacy-range", @"Legacy") mutableCopy];
@@ -224,8 +224,8 @@ static void test_drift_radius_policy(void) {
           @"a migrated legacy radius is valid for application");
     GPSLabProfile *roundTrip = legacy30 != nil
         ? [GPSLabProfile profileFromDictionary:legacy30.dictionaryRepresentation] : nil;
-    CHECK(roundTrip != nil && fabs(roundTrip.driftRadiusMeters - 20.0) < 1e-9,
-          @"migrated legacy radius round-trips as 20 m");
+    CHECK(roundTrip != nil && fabs(roundTrip.driftRadiusMeters - 30.0) < 1e-9,
+          @"migrated legacy radius round-trips as 30 m");
 }
 
 static void test_legacy_drift_radius_loads_via_store(void) {
@@ -242,8 +242,8 @@ static void test_legacy_drift_radius_loads_via_store(void) {
 
     NSArray<GPSLabProfile *> *profiles = store.loadProfiles;
     CHECK(profiles.count == 1, @"legacy profile is kept by the store, not dropped");
-    CHECK(profiles.count == 1 && fabs(profiles.firstObject.driftRadiusMeters - 20.0) < 1e-9,
-          @"store load clamps the legacy 30 m radius to 20 m");
+    CHECK(profiles.count == 1 && fabs(profiles.firstObject.driftRadiusMeters - 30.0) < 1e-9,
+          @"store load keeps the legacy 30 m radius (now in policy)");
 
     // The migrated profile can be persisted again (now valid under the new schema),
     // and it survives the rewrite rather than being deleted.
@@ -252,8 +252,8 @@ static void test_legacy_drift_radius_loads_via_store(void) {
           @"migrated legacy profile can be written back");
     NSArray<GPSLabProfile *> *reloaded = store.loadProfiles;
     CHECK(reloaded.count == 1, @"migrated legacy profile still present after rewrite");
-    CHECK(reloaded.count == 1 && fabs(reloaded.firstObject.driftRadiusMeters - 20.0) < 1e-9,
-          @"rewritten legacy profile keeps the clamped radius");
+    CHECK(reloaded.count == 1 && fabs(reloaded.firstObject.driftRadiusMeters - 30.0) < 1e-9,
+          @"rewritten legacy profile keeps the migrated radius");
 
     [[NSFileManager defaultManager] removeItemAtURL:directory error:NULL];
 }

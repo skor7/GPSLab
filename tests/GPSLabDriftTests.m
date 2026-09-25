@@ -4,7 +4,7 @@
 //
 //  Deterministic, non-flaky tests for the bounded drift model. The random source
 //  is injected, so every assertion is reproducible. Covers:
-//    * bounds over thousands of steps for the whole 0..20 m range;
+//    * bounds over thousands of steps for the whole 0..50 m range;
 //    * radius 0 is the exact base (and clears stale state);
 //    * smoothing: consecutive points stay correlated (no edge-to-edge jumps);
 //    * latitude-aware longitude conversion in the offset->coordinate helper;
@@ -53,7 +53,7 @@ static GPSLabDriftRandomUnitProvider MakeProvider(uint64_t seed) {
 static void test_bounds_over_thousands(void) {
     // Every radius in the supported range, at several latitudes (including high
     // latitude where the longitude conversion is most sensitive).
-    const double radii[] = { 0.0, 0.001, 1.0, 5.0, 20.0 };
+    const double radii[] = { 0.0, 0.001, 1.0, 5.0, 20.0, 50.0 };
     const CLLocationCoordinate2D anchors[] = {
         { 0.0, 0.0 },
         { 24.7136, 46.6753 },
@@ -224,10 +224,10 @@ static void test_deterministic_and_policy(void) {
     }
 
     CHECK(GPSLabMinDriftRadiusMeters() == 0.0, @"drift minimum is 0 m");
-    CHECK(GPSLabMaxDriftRadiusMeters() == 20.0, @"drift maximum is 20 m");
+    CHECK(GPSLabMaxDriftRadiusMeters() == 50.0, @"drift maximum is 50 m");
     CHECK(fabs(GPSLabDefaultDriftRadiusMeters() - 5.0) < 1e-12, @"drift default is 5 m");
     CHECK(GPSLabClampDriftRadiusMeters(-3.0) == 0.0, @"negative radius clamps to 0");
-    CHECK(GPSLabClampDriftRadiusMeters(100.0) == 20.0, @"oversized radius clamps to 20");
+    CHECK(GPSLabClampDriftRadiusMeters(100.0) == 50.0, @"oversized radius clamps to 50");
     CHECK(fabs(GPSLabClampDriftRadiusMeters(7.5) - 7.5) < 1e-12, @"in-range radius is preserved");
 
     // A NaN radius clamps to the 0 minimum: the exact base, never a crash.

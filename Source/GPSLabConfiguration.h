@@ -31,7 +31,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 /**
  * Maximum displacement from the selected BASE coordinate, in meters. Clamped to
- * [0, 20]; 0 means the exact base coordinate. Defaults to 5.
+ * [0, 50]; 0 means the exact base coordinate. Defaults to 5.
  */
 @property (nonatomic, assign) double driftRadiusMeters;
 

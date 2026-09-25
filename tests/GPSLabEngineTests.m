@@ -195,13 +195,13 @@ int main(void) {
         }
         CHECK(exactBase, @"radius 0 emits the exact base coordinate");
 
-        // Editing the radius never enables drift, and clamps into [0, 20].
+        // Editing the radius never enables drift, and clamps into [0, 50].
         [engine setDriftEnabled:NO];
         [engine setDriftRadiusMeters:10.0];
         CHECK(!engine.isDriftEnabled, @"editing the radius never enables the engine");
         CHECK(nearly(engine.driftRadiusMeters, 10.0), @"in-range radius is preserved");
         [engine setDriftRadiusMeters:100.0];
-        CHECK(nearly(engine.driftRadiusMeters, 20.0), @"radius clamps at 20 m");
+        CHECK(nearly(engine.driftRadiusMeters, 50.0), @"radius clamps at 50 m");
         [engine setDriftRadiusMeters:-4.0];
         CHECK(nearly(engine.driftRadiusMeters, 0.0), @"radius floors at 0 m");
         [engine setDriftRadiusMeters:20.0];

@@ -184,7 +184,7 @@ Diagnostics                os_log only; allowed events; never logs coordinates
   allow-list (bookmarks, recents, route prefs, drift, enabled) is unaffected.
 - **Drift.** A bounded correlated random walk around the selected BASE coordinate.
   The generated point never exceeds the configured radius, which ranges from 0 m
-  (the exact base) to 20 m and defaults to 5 m. The radius is enforced against the
+  (the exact base) to 50 m and defaults to 5 m. The radius is enforced against the
   base center (tangent-plane clamp plus a geodesic clamp) with no accumulation.
 - **Route simulation.** Driving/Walking use `MKDirections`; Cycling is approximated
   with the walking pedestrian network because the public `MKDirectionsTransportType`
@@ -249,6 +249,9 @@ suite, under `GPSLab.*` keys:
 
 - `enabled`
 - `driftEnabled`, `driftRadiusMeters`
+- the auto-saved drift radius preference (`GPSLab.driftRadius`, 0–50 m): written
+  as soon as the radius control changes and overlaid on the next launch even when
+  the coordinate Apply was never tapped
 - `keepLastCoordinate`
 - route `routeMode`, `routeCustomSpeedKmh`, `stopBehavior`
 - bookmarks (name + coordinate + altitude)

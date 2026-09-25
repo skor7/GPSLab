@@ -2368,6 +2368,10 @@ typedef NS_ENUM(NSInteger, GPSLabMapPickMode) {
         }
         strongSelf.pendingDriftEnabled = enabled;
         strongSelf.pendingDriftRadius = GPSLabClampDriftRadiusMeters(radiusMeters);
+        // Auto-save the changed radius immediately (its own protected key), so the
+        // last value survives a relaunch even without tapping Apply. This writes
+        // ONLY the drift-radius preference, never the configuration/coordinate.
+        [[GPSLabStore sharedStore] saveDriftRadiusMeters:strongSelf.pendingDriftRadius];
         strongSelf.driftSwitch.on = enabled;
         [strongSelf updateDriftRangeDisplay];
         [strongSelf updateStatusLabel];

@@ -563,13 +563,152 @@ static void test_drift_config_backward_compatible(void) {
           @"legacy config without a drift radius defaults to 5 m");
     CHECK(parsed.driftEnabled, @"legacy config keeps drift enabled by default");
 
-    // A legacy out-of-range radius is clamped into [0, 20], never rejected.
+    // A legacy out-of-range radius is clamped into [0, 50], never rejected.
     NSDictionary *oversized = @{ @"driftRadiusMeters": @(999.0) };
-    CHECK(fabs([GPSLabConfiguration configurationFromDictionary:oversized].driftRadiusMeters - 20.0) < 1e-9,
-          @"legacy oversized radius clamps to 20 m");
+    CHECK(fabs([GPSLabConfiguration configurationFromDictionary:oversized].driftRadiusMeters - 50.0) < 1e-9,
+          @"legacy oversized radius clamps to 50 m");
     NSDictionary *negative = @{ @"driftRadiusMeters": @(-3.0) };
     CHECK(fabs([GPSLabConfiguration configurationFromDictionary:negative].driftRadiusMeters) < 1e-9,
           @"legacy negative radius clamps to 0 m");
+}
+
+#pragma mark - Auto-saved drift radius preference
+
+static void test_drift_radius_preference(void) {
+    beginStore();
+
+    // First launch: nothing auto-saved, so the configuration default (5 m) is used.
+    CHECK([gStore loadDriftRadiusMeters] == nil, @"fresh store has no auto-saved radius");
+    CHECK(fabs([gStore loadConfiguration].driftRadiusMeters - 5.0) < 1e-9,
+          @"first launch uses the 5 m default");
+
+    // A changed value persists and is restored on a fresh defaults instance (relaunch).
+    [gStore saveDriftRadiusMeters:20.0];
+    CHECK([gStore loadDriftRadiusMeters] != nil &&
+          fabs([gStore loadDriftRadiusMeters].doubleValue - 20.0) < 1e-9,
+          @"20 m round-trips");
+    CHECK(fabs(reopenedStore().loadConfiguration.driftRadiusMeters - 20.0) < 1e-9,
+          @"relaunch restores the saved 20 m radius without an Apply");
+
+    // The new maximum persists across a relaunch too.
+    [gStore saveDriftRadiusMeters:50.0];
+    CHECK(fabs(reopenedStore().loadConfiguration.driftRadiusMeters - 50.0) < 1e-9,
+          @"relaunch restores the saved 50 m radius without an Apply");
+
+    // A stale out-of-range value clamps safely instead of loading raw.
+    [gStore saveDriftRadiusMeters:999.0];
+    CHECK([gStore loadDriftRadiusMeters] != nil &&
+          fabs([gStore loadDriftRadiusMeters].doubleValue - 50.0) < 1e-9,
+          @"oversized saved radius clamps to the 50 m maximum");
+    [gStore saveDriftRadiusMeters:-10.0];
+    CHECK([gStore loadDriftRadiusMeters] != nil &&
+          fabs([gStore loadDriftRadiusMeters].doubleValue) < 1e-9,
+          @"negative saved radius clamps to 0 m");
+
+    // Disabling then re-enabling drift retains the auto-saved radius (the preference
+    // is independent of the enabled flag and the committed configuration).
+    [gStore saveDriftRadiusMeters:30.0];
+    GPSLabConfiguration *disabled = [gStore loadConfiguration];
+    disabled.driftEnabled = NO;
+    [gStore saveConfiguration:disabled];
+    CHECK(![gStore loadConfiguration].driftEnabled &&
+          fabs([gStore loadConfiguration].driftRadiusMeters - 30.0) < 1e-9,
+          @"a disabled drift config retains the saved radius");
+    GPSLabConfiguration *enabled = [gStore loadConfiguration];
+    enabled.driftEnabled = YES;
+    [gStore saveConfiguration:enabled];
+    CHECK([gStore loadConfiguration].driftEnabled &&
+          fabs([gStore loadConfiguration].driftRadiusMeters - 30.0) < 1e-9,
+          @"re-enabling drift retains the saved radius");
+
+    // Saving the preference never overwrites the persisted coordinate/other fields;
+    // the overlay only replaces the radius of the loaded configuration.
+    GPSLabConfiguration *kept = [gStore loadConfiguration];
+    kept.latitude = 24.5;
+    kept.longitude = 46.5;
+    kept.altitude = 111.0;
+    kept.heading = 12.0;
+    kept.driftRadiusMeters = 7.0;
+    [gStore saveConfiguration:kept];
+    [gStore saveDriftRadiusMeters:44.0];
+    GPSLabConfiguration *again = [gStore loadConfiguration];
+    CHECK(fabs(again.latitude - 24.5) < 1e-9 && fabs(again.longitude - 46.5) < 1e-9 &&
+          fabs(again.altitude - 111.0) < 1e-9 && fabs(again.heading - 12.0) < 1e-9,
+          @"saving the drift radius never overwrites the coordinate");
+    CHECK(fabs(again.driftRadiusMeters - 44.0) < 1e-9,
+          @"the saved radius overlays the loaded configuration radius");
+
+    // Regression: an unrelated engine/config save repeats the radius the persisted
+    // configuration already holds and must NOT erase an in-flight slider draft.
+    // Establish a persisted configuration radius of 5 m (a genuine 7 -> 5 commit).
+    GPSLabConfiguration *baseline = [gStore loadConfiguration];
+    baseline.driftRadiusMeters = 5.0;
+    [gStore saveConfiguration:baseline];
+    // The user drags the slider to 20 m without applying: only the draft changes.
+    [gStore saveDriftRadiusMeters:20.0];
+    // An unrelated save repeats the already-persisted 5 m radius.
+    GPSLabConfiguration *unrelated = [gStore loadConfiguration];
+    unrelated.driftRadiusMeters = 5.0;
+    [gStore saveConfiguration:unrelated];
+    CHECK([gStore loadDriftRadiusMeters] != nil &&
+          fabs([gStore loadDriftRadiusMeters].doubleValue - 20.0) < 1e-9,
+          @"an unrelated same-radius save leaves the draft preference untouched");
+    CHECK(fabs(reopenedStore().loadConfiguration.driftRadiusMeters - 20.0) < 1e-9,
+          @"relaunch after an unrelated save resumes the draft 20 m, not the stale 5 m");
+
+    // A GENUINE radius change (5 -> 7) stays authoritative and beats the draft.
+    GPSLabConfiguration *changed = [gStore loadConfiguration];
+    changed.driftRadiusMeters = 7.0;
+    [gStore saveConfiguration:changed];
+    CHECK(fabs(reopenedStore().loadConfiguration.driftRadiusMeters - 7.0) < 1e-9,
+          @"a genuinely changed committed radius updates the preference to 7 m");
+
+    // Corrupt stored values are ignored (nil), never crash and never fabricate.
+    [gDefaults setObject:@"nope" forKey:@"GPSLab.driftRadius"];
+    [gDefaults synchronize];
+    CHECK([gStore loadDriftRadiusMeters] == nil, @"non-numeric stored radius ignored");
+    [gDefaults setBool:YES forKey:@"GPSLab.driftRadius"];
+    [gDefaults synchronize];
+    CHECK([gStore loadDriftRadiusMeters] == nil, @"boolean stored radius ignored");
+    [gDefaults setObject:@[ @1 ] forKey:@"GPSLab.driftRadius"];
+    [gDefaults synchronize];
+    CHECK([gStore loadDriftRadiusMeters] == nil, @"non-number stored radius ignored");
+
+    endStore();
+}
+
+/**
+ * The first configuration save has no previously persisted radius to compare
+ * against, so it must seed the preference from the committed value when the user
+ * has never set one, and preserve an already-saved draft preference otherwise.
+ */
+static void test_drift_radius_first_config_save(void) {
+    beginStore();
+
+    CHECK([gStore loadDriftRadiusMeters] == nil, @"fresh store has no draft preference");
+    [gStore saveConfiguration:[GPSLabConfiguration defaultConfiguration]];  // 5 m
+    CHECK([gStore loadDriftRadiusMeters] != nil &&
+          fabs([gStore loadDriftRadiusMeters].doubleValue - 5.0) < 1e-9,
+          @"first config save seeds the preference from the committed radius");
+    CHECK(fabs(reopenedStore().loadConfiguration.driftRadiusMeters - 5.0) < 1e-9,
+          @"the seeded first-save preference survives a relaunch");
+
+    endStore();
+
+    // A draft preference already exists before the first configuration save: the
+    // draft wins, because an unrelated first save must not erase an unapplied edit.
+    beginStore();
+    [gStore saveDriftRadiusMeters:20.0];
+    GPSLabConfiguration *first = [gStore loadConfiguration];
+    first.driftRadiusMeters = 5.0;
+    [gStore saveConfiguration:first];
+    CHECK([gStore loadDriftRadiusMeters] != nil &&
+          fabs([gStore loadDriftRadiusMeters].doubleValue - 20.0) < 1e-9,
+          @"first config save preserves an explicit draft preference");
+    CHECK(fabs(reopenedStore().loadConfiguration.driftRadiusMeters - 20.0) < 1e-9,
+          @"the preserved first-save draft survives a relaunch");
+
+    endStore();
 }
 
 #pragma mark - Map style preference (UI only)
@@ -634,6 +773,8 @@ int main(void) {
         test_concurrent_duplicate_insert();
         test_reopen_keep_last_independent();
         test_drift_config_backward_compatible();
+        test_drift_radius_preference();
+        test_drift_radius_first_config_save();
         test_map_style_preference();
 
         if (gFailures != 0) {

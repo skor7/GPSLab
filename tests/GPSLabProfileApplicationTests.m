@@ -484,15 +484,15 @@ static void test_drift_radius_boundaries_forwarded(void) {
                                                          altitude:0.0
                                                           heading:-1.0
                                                      driftEnabled:YES
-                                                driftRadiusMeters:20.0
+                                                 driftRadiusMeters:50.0
                                                             route:nil
                                                              wifi:nil
                                                         bluetooth:nil
                                                          schedule:nil];
-    CHECK([max isValidForApplication], @"a 20 m drift radius is a valid profile");
+    CHECK([max isValidForApplication], @"a 50 m drift radius is a valid profile");
     GPSLabProfileApplicationResult *maxResult = ApplySync(coordinator, max);
-    CHECK(maxResult.applied, @"a 20 m drift profile applies");
-    CHECK(fabs(backend.lastDriftRadius - 20.0) < 1e-9, @"the 20 m radius is forwarded");
+    CHECK(maxResult.applied, @"a 50 m drift profile applies");
+    CHECK(fabs(backend.lastDriftRadius - 50.0) < 1e-9, @"the 50 m radius is forwarded");
 
     GPSLabProfile *tooBig = [[GPSLabProfile alloc] initWithIdentifier:@"drift-big"
                                                                  name:@"Big"
@@ -502,12 +502,12 @@ static void test_drift_radius_boundaries_forwarded(void) {
                                                             altitude:0.0
                                                              heading:-1.0
                                                         driftEnabled:YES
-                                                   driftRadiusMeters:20.5
+                                                   driftRadiusMeters:50.5
                                                                route:nil
                                                                 wifi:nil
                                                            bluetooth:nil
                                                             schedule:nil];
-    CHECK(![tooBig isValidForApplication], @"a radius above 20 m fails preflight");
+    CHECK(![tooBig isValidForApplication], @"a radius above 50 m fails preflight");
 }
 
 int main(void) {

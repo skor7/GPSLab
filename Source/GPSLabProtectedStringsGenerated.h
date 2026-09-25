@@ -31,6 +31,7 @@
 #define GPSLAB_PROTECTED_STRING_RecentsKey (@"GPSLab.recents")
 #define GPSLAB_PROTECTED_STRING_CommittedSelectionKey (@"GPSLab.committedSelection")
 #define GPSLAB_PROTECTED_STRING_MapStyleKey (@"GPSLab.mapStyle")
+#define GPSLAB_PROTECTED_STRING_DriftRadiusKey (@"GPSLab.driftRadius")
 #define GPSLAB_PROTECTED_STRING_LanguageDefaultsKey (@"GPSLab.language")
 #define GPSLAB_PROTECTED_STRING_WiFiSimulationKey (@"GPSLab.simulation.wifi.enabled")
 #define GPSLAB_PROTECTED_STRING_BluetoothSimulationKey (@"GPSLab.simulation.bluetooth.enabled")
@@ -84,6 +85,12 @@ static const unsigned char kGPSLabProtected_MapStyleKey[] __attribute__((unused)
 };
 static const unsigned char kGPSLabProtectedKey_MapStyleKey __attribute__((unused)) = 0x99;
 
+static const unsigned char kGPSLabProtected_DriftRadiusKey[] __attribute__((unused)) = {
+    0x56, 0x41, 0x42, 0x5D, 0x70, 0x73, 0x3F, 0x75, 0x63, 0x78, 0x77, 0x65,
+    0x43, 0x70, 0x75, 0x78, 0x64, 0x62,
+};
+static const unsigned char kGPSLabProtectedKey_DriftRadiusKey __attribute__((unused)) = 0x11;
+
 static const unsigned char kGPSLabProtected_LanguageDefaultsKey[] __attribute__((unused)) = {
     0x23, 0x34, 0x37, 0x28, 0x05, 0x06, 0x4A, 0x08, 0x05, 0x0A, 0x03, 0x11,
     0x05, 0x03, 0x01,
@@ -122,6 +129,7 @@ static const GPSLabProtectedStringCase kGPSLabProtectedStringCases[] __attribute
     { "RecentsKey", kGPSLabProtected_RecentsKey, sizeof(kGPSLabProtected_RecentsKey), kGPSLabProtectedKey_RecentsKey, "GPSLab.recents" },
     { "CommittedSelectionKey", kGPSLabProtected_CommittedSelectionKey, sizeof(kGPSLabProtected_CommittedSelectionKey), kGPSLabProtectedKey_CommittedSelectionKey, "GPSLab.committedSelection" },
     { "MapStyleKey", kGPSLabProtected_MapStyleKey, sizeof(kGPSLabProtected_MapStyleKey), kGPSLabProtectedKey_MapStyleKey, "GPSLab.mapStyle" },
+    { "DriftRadiusKey", kGPSLabProtected_DriftRadiusKey, sizeof(kGPSLabProtected_DriftRadiusKey), kGPSLabProtectedKey_DriftRadiusKey, "GPSLab.driftRadius" },
     { "LanguageDefaultsKey", kGPSLabProtected_LanguageDefaultsKey, sizeof(kGPSLabProtected_LanguageDefaultsKey), kGPSLabProtectedKey_LanguageDefaultsKey, "GPSLab.language" },
     { "WiFiSimulationKey", kGPSLabProtected_WiFiSimulationKey, sizeof(kGPSLabProtected_WiFiSimulationKey), kGPSLabProtectedKey_WiFiSimulationKey, "GPSLab.simulation.wifi.enabled" },
     { "BluetoothSimulationKey", kGPSLabProtected_BluetoothSimulationKey, sizeof(kGPSLabProtected_BluetoothSimulationKey), kGPSLabProtectedKey_BluetoothSimulationKey, "GPSLab.simulation.bluetooth.enabled" },

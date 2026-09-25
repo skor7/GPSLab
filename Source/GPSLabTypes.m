@@ -39,7 +39,7 @@ double GPSLabMinDriftRadiusMeters(void) {
 }
 
 double GPSLabMaxDriftRadiusMeters(void) {
-    return 20.0;
+    return 50.0;
 }
 
 double GPSLabDefaultDriftRadiusMeters(void) {

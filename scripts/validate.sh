@@ -754,8 +754,8 @@ FORM_M="$SOURCE_DIR/GPSLabProfileFormViewController.m"
 
 grep -q -F "double GPSLabMaxDriftRadiusMeters(void) {" "$TYPES_M" \
     || fail "drift maximum accessor missing"
-grep -A2 -F "double GPSLabMaxDriftRadiusMeters(void) {" "$TYPES_M" | grep -q -F "return 20.0;" \
-    || fail "drift maximum must be 20 m"
+grep -A2 -F "double GPSLabMaxDriftRadiusMeters(void) {" "$TYPES_M" | grep -q -F "return 50.0;" \
+    || fail "drift maximum must be 50 m"
 grep -q -F "double GPSLabDefaultDriftRadiusMeters(void) {" "$TYPES_M" \
     || fail "drift default accessor missing"
 grep -A2 -F "double GPSLabDefaultDriftRadiusMeters(void) {" "$TYPES_M" | grep -q -F "return 5.0;" \
@@ -1092,6 +1092,25 @@ if grep -q -F 'kGPSLabKeyMapStyle' "$SOURCE_DIR/GPSLabConfiguration.m" \
     fail "the map style must never enter the configuration/profile schema"
 fi
 pass "map style is a persisted UI preference with matching snapshots and no schema change"
+
+# Auto-saved drift radius: its own protected key, clamped by the shared policy,
+# overlaid on the loaded configuration (so the engine resumes it at startup) and
+# written by the fluctuation sheet on an edit without ever touching the engine.
+grep -q -F 'kGPSLabKeyDriftRadius GPSLAB_PROTECTED_STRING(DriftRadiusKey)' "$STORE" \
+    || fail "the store must persist the auto-saved drift radius via the protected literal"
+grep -q -F 'GPSLAB_STRING(DriftRadiusKey, "GPSLab.driftRadius")' "$SOURCE_DIR/GPSLabProtectedStrings.def" \
+    || fail "the drift-radius key must be exactly GPSLab.driftRadius in the manifest"
+grep -q -F -- "- (nullable NSNumber *)loadDriftRadiusMeters;" "$SOURCE_DIR/GPSLabStore.h" \
+    || fail "the store must expose loadDriftRadiusMeters"
+grep -q -F -- "- (void)saveDriftRadiusMeters:(double)radius;" "$SOURCE_DIR/GPSLabStore.h" \
+    || fail "the store must expose saveDriftRadiusMeters"
+if ! sed -n '/- (GPSLabConfiguration \*)loadConfiguration {/,/^}/p' "$STORE" \
+        | grep -q -F "loadDriftRadiusMeters"; then
+    fail "loadConfiguration must overlay the auto-saved drift radius"
+fi
+grep -q -F "saveDriftRadiusMeters" "$OVERLAY" \
+    || fail "the fluctuation sheet must auto-save the changed drift radius"
+pass "auto-saved drift radius is protected, clamped, overlaid at load and written by the sheet"
 
 # ------------------------------------------- Protected client literals --------
 echo "== Production-only protected client literals =="

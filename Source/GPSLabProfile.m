@@ -134,7 +134,7 @@ static const double kGPSLabLegacyDriftRadiusMaxMeters = 500.0;
 
 /**
  * A persisted radius that was valid under the historical schema (up to 500 m) is
- * migrated by clamping into the current [0, 20] policy rather than dropping the
+ * migrated by clamping into the current [0, 50] policy rather than dropping the
  * whole profile. The current schema also allows [0, 1), so the loadable window is
  * [0, 500]; non-finite/non-number and values outside that window stay invalid.
  */
@@ -466,7 +466,7 @@ static BOOL GPSLabDriftRadiusHistoricallyLoadable(double radius) {
         !GPSLabDriftRadiusHistoricallyLoadable(driftRadius)) {
         return nil;
     }
-    // Migrate a historically-valid radius into the current [0, 20] policy: a value
+    // Migrate a historically-valid radius into the current [0, 50] policy: a value
     // that was valid under the old schema is clamped, never silently dropped. The
     // stored/marshalled value is the clamped one, so the next write is new-schema.
     driftRadius = GPSLabClampDriftRadiusMeters(driftRadius);

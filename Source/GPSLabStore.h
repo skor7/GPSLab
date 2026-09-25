@@ -109,6 +109,20 @@ NS_ASSUME_NONNULL_BEGIN
 /** Persists a style; an out-of-range value is stored as the Satellite default. */
 - (void)saveMapStyle:(GPSLabMapStyle)style;
 
+#pragma mark - Drift radius preference (auto-saved UI value)
+
+/**
+ * The auto-saved drift radius, clamped into the shared [min, max] policy, or nil
+ * when the user has never changed the radius (or the stored value is corrupt).
+ * It is stored under its own protected key, never in the configuration
+ * dictionary, so saving it cannot overwrite the coordinate or any other field.
+ * `loadConfiguration` overlays a non-nil value so the engine and the UI resume
+ * the last radius on the next launch even without an Apply.
+ */
+- (nullable NSNumber *)loadDriftRadiusMeters;
+/** Persists the radius (clamped into the shared policy). */
+- (void)saveDriftRadiusMeters:(double)radius;
+
 #pragma mark - Pending selection (preview draft)
 
 - (nullable GPSLabPendingSelection *)loadPendingSelection;

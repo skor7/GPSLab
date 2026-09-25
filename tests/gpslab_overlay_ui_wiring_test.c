@@ -294,6 +294,43 @@ static void test_overlay_drift_draft(const char *overlay, const char *catalog) {
     free(profile);
 }
 
+/* ------------------------------------------------- Auto-saved drift radius */
+
+static void test_drift_radius_preference(const char *overlay, const char *store,
+                                         const char *store_header, const char *manifest) {
+    // The store exposes the dedicated auto-save seam.
+    CHECK(contains(store_header, "- (nullable NSNumber *)loadDriftRadiusMeters;"),
+          "the store exposes loadDriftRadiusMeters");
+    CHECK(contains(store_header, "- (void)saveDriftRadiusMeters:(double)radius;"),
+          "the store exposes saveDriftRadiusMeters");
+
+    // It persists under its own protected literal (never a configuration write).
+    CHECK(contains(store, "GPSLAB_PROTECTED_STRING(DriftRadiusKey)"),
+          "the store persists the radius under the protected drift key");
+    CHECK(contains(manifest, "GPSLAB_STRING(DriftRadiusKey, \"GPSLab.driftRadius\")"),
+          "the manifest defines the exact drift-radius key");
+    CHECK(contains(store, "GPSLabClampDriftRadiusMeters"),
+          "the saved radius is clamped through the shared policy");
+
+    // loadConfiguration overlays the saved radius so the engine/UI see it at startup.
+    REQUIRE_BODY(loadConfig, store, "- (GPSLabConfiguration *)loadConfiguration {");
+    CHECK(contains(loadConfig, "loadDriftRadiusMeters"),
+          "loading a configuration overlays the auto-saved radius");
+    CHECK(contains(loadConfig, "driftRadiusMeters"),
+          "the overlay targets the drift radius field only");
+    CHECK(!contains(loadConfig, "latitude = "), "the overlay never rewrites the latitude");
+    CHECK(!contains(loadConfig, "longitude = "), "the overlay never rewrites the longitude");
+    free(loadConfig);
+
+    // The fluctuation sheet auto-saves the changed radius on every draft edit.
+    REQUIRE_BODY(sheet, overlay, "- (void)presentFluctuationSheet {");
+    CHECK(contains(sheet, "saveDriftRadiusMeters"),
+          "the fluctuation sheet auto-saves the changed radius");
+    CHECK(!contains(sheet, "sharedEngine"), "the auto-save never reaches the engine");
+    CHECK(!contains(sheet, "setDriftRadiusMeters"), "the auto-save never uses a direct engine setter");
+    free(sheet);
+}
+
 /* ------------------------------------------------------------------- Keyboard */
 
 static void test_sheet_keyboard(const char *sheet) {
@@ -460,6 +497,7 @@ int main(void) {
     }
 
     test_overlay_drift_draft(overlay, catalog);
+    test_drift_radius_preference(overlay, store, store_header, manifest);
     test_sheet_keyboard(sheet);
     test_form_actions_end_editing(manual, form, subscription, altitude);
     test_map_preference(overlay, store, store_header, types, configuration, profile, manifest);

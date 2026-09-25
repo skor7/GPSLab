@@ -31,6 +31,10 @@
 // A persisted UI preference (foreground map style); never part of the profile
 // schema or the synthetic configuration.
 #define kGPSLabKeyMapStyle GPSLAB_PROTECTED_STRING(MapStyleKey)
+// The auto-saved drift radius preference. Stored under its own key so a slider
+// edit can persist WITHOUT writing the configuration/coordinate; loadConfiguration
+// overlays it so the engine resumes the last radius on the next launch.
+#define kGPSLabKeyDriftRadius GPSLAB_PROTECTED_STRING(DriftRadiusKey)
 
 static NSString * const kGPSLabBookmarkName = @"name";
 static NSString * const kGPSLabBookmarkLatitude = @"latitude";
@@ -67,6 +71,22 @@ static BOOL GPSLabStoreStrictDouble(NSDictionary *dictionary, NSString *key, dou
     }
     *outValue = number;
     return YES;
+}
+
+/** YES only for a stored preference that is a usable finite, non-boolean number. */
+static BOOL GPSLabStoreUsablePreference(id value) {
+    if (![value isKindOfClass:[NSNumber class]] || GPSLabStoreIsBooleanNumber(value)) {
+        return NO;
+    }
+    return isfinite([value doubleValue]);
+}
+
+/** The radius a persisted configuration dictionary represents (default when absent). */
+static double GPSLabStoreConfigurationRadius(id stored) {
+    if (![stored isKindOfClass:[NSDictionary class]]) {
+        return GPSLabDefaultDriftRadiusMeters();
+    }
+    return [GPSLabConfiguration configurationFromDictionary:(NSDictionary *)stored].driftRadiusMeters;
 }
 
 /** The optional provider is kept only when it is one of the known keys. */
@@ -275,10 +295,20 @@ static NSString *GPSLabStoreValidatedProvider(id value) {
     id stored = [_defaults objectForKey:kGPSLabKeyConfiguration];
     os_unfair_lock_unlock(&_lock);
 
+    GPSLabConfiguration *configuration = [GPSLabConfiguration defaultConfiguration];
     if ([stored isKindOfClass:[NSDictionary class]]) {
-        return [GPSLabConfiguration configurationFromDictionary:(NSDictionary *)stored];
+        configuration = [GPSLabConfiguration configurationFromDictionary:(NSDictionary *)stored];
     }
-    return [GPSLabConfiguration defaultConfiguration];
+
+    // Overlay the auto-saved radius preference on the loaded configuration. Only
+    // the radius field is touched, so the coordinate and every other allow-listed
+    // value come from the persisted configuration untouched. A nil value (nothing
+    // saved / corrupt) keeps the persisted configuration's own radius.
+    NSNumber *savedRadius = [self loadDriftRadiusMeters];
+    if (savedRadius != nil) {
+        configuration.driftRadiusMeters = GPSLabClampDriftRadiusMeters(savedRadius.doubleValue);
+    }
+    return configuration;
 }
 
 - (void)saveConfiguration:(GPSLabConfiguration *)configuration {
@@ -287,9 +317,30 @@ static NSString *GPSLabStoreValidatedProvider(id value) {
     }
     [configuration sanitize];
     NSDictionary *representation = [configuration dictionaryRepresentation];
+    double committedRadius = GPSLabClampDriftRadiusMeters(configuration.driftRadiusMeters);
 
     os_unfair_lock_lock(&_lock);
+    id previousStored = [_defaults objectForKey:kGPSLabKeyConfiguration];
+    id existingPreference = [_defaults objectForKey:kGPSLabKeyDriftRadius];
     [_defaults setObject:representation forKey:kGPSLabKeyConfiguration];
+
+    // Only mirror the committed radius into the auto-saved preference when the
+    // commit is a GENUINE radius change. An unrelated engine/config save (anchor,
+    // enabled flag, route prefs, ...) repeats the radius already stored in the
+    // persisted configuration; it must leave an in-flight slider draft untouched
+    // so a relaunch resumes the draft instead of a stale committed value. Genuine
+    // radius commits (Apply, profile, rollback, direct setter) still win.
+    if ([previousStored isKindOfClass:[NSDictionary class]]) {
+        double previousRadius = GPSLabStoreConfigurationRadius(previousStored);
+        if (fabs(committedRadius - previousRadius) >= 1e-9) {
+            [_defaults setObject:@(committedRadius) forKey:kGPSLabKeyDriftRadius];
+        }
+    } else if (!GPSLabStoreUsablePreference(existingPreference)) {
+        // First configuration save: no previously persisted radius to compare
+        // against, so preserve an explicit draft preference if one exists, and only
+        // otherwise seed it from the committed value.
+        [_defaults setObject:@(committedRadius) forKey:kGPSLabKeyDriftRadius];
+    }
     os_unfair_lock_unlock(&_lock);
 }
 
@@ -307,6 +358,33 @@ static NSString *GPSLabStoreValidatedProvider(id value) {
         [dictionary removeObjectForKey:kGPSLabKeyHeading];
         [_defaults setObject:dictionary forKey:kGPSLabKeyConfiguration];
     }
+    os_unfair_lock_unlock(&_lock);
+}
+
+#pragma mark - Drift radius preference (auto-saved UI value)
+
+- (nullable NSNumber *)loadDriftRadiusMeters {
+    os_unfair_lock_lock(&_lock);
+    id stored = [_defaults objectForKey:kGPSLabKeyDriftRadius];
+    os_unfair_lock_unlock(&_lock);
+
+    // Missing, wrong-typed, boolean or non-finite values are ignored (nil), so a
+    // corrupt entry never crashes and never fabricates a radius. A finite
+    // out-of-range value is a stale preference and clamps into the policy.
+    if (![stored isKindOfClass:[NSNumber class]] || GPSLabStoreIsBooleanNumber(stored)) {
+        return nil;
+    }
+    double radius = [stored doubleValue];
+    if (!isfinite(radius)) {
+        return nil;
+    }
+    return @(GPSLabClampDriftRadiusMeters(radius));
+}
+
+- (void)saveDriftRadiusMeters:(double)radius {
+    double sanitized = GPSLabClampDriftRadiusMeters(radius);
+    os_unfair_lock_lock(&_lock);
+    [_defaults setObject:@(sanitized) forKey:kGPSLabKeyDriftRadius];
     os_unfair_lock_unlock(&_lock);
 }
 
