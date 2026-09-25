@@ -226,8 +226,8 @@ export function defaultPlanCatalog() {
       durationDays: 30,
       graceDays: 7,
       trial: { eligible: false, durationHours: 0 },
-      features: ['30 يوم', 'تحديثات', 'فترة سماح 7 أيام'],
-      maxInstallations: 2,
+      features: ['30 يوم', 'جهاز واحد', 'تحديثات', 'فترة سماح 7 أيام'],
+      maxInstallations: 1,
     },
     {
       id: 'yearly',
@@ -239,8 +239,8 @@ export function defaultPlanCatalog() {
       durationDays: 365,
       graceDays: 14,
       trial: { eligible: false, durationHours: 0 },
-      features: ['365 يوم', 'تحديثات', 'فترة سماح 14 يومًا', 'أفضل قيمة'],
-      maxInstallations: 3,
+      features: ['365 يوم', 'جهاز واحد', 'تحديثات', 'فترة سماح 14 يومًا', 'أفضل قيمة'],
+      maxInstallations: 1,
     },
   ]);
 }

@@ -54,3 +54,9 @@ test('the default catalog ships a trial, monthly and yearly plan', () => {
   assert.deepEqual(ids, ['trial', 'monthly', 'yearly']);
   assert.equal(defaultPlanCatalog().trialEligible()[0].id, 'trial');
 });
+
+test('every offered plan allows exactly one installation', () => {
+  for (const plan of defaultPlanCatalog().active()) {
+    assert.equal(plan.maxInstallations, 1, `${plan.id} must be limited to one installation`);
+  }
+});
