@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>موقع — المرجع النهائي للواجهة</title>
+<style>
+:root{--panel:#111116;--text:#f5f5f7;--muted:#9b9ba4;--accent:#8e5cff;--green:#30d158;--shadow:0 24px 60px rgba(0,0,0,.45)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html,body{margin:0;background:#111;color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Segoe UI",Tahoma,Arial,sans-serif}button,input{font:inherit}button{cursor:pointer}
+.preview-shell{min-height:100vh;display:grid;place-items:center;padding:28px 14px;background:radial-gradient(circle at 20% 10%,rgba(142,92,255,.08),transparent 28%),#141417}
+.phone{width:min(430px,100%);min-height:880px;border-radius:34px;overflow:hidden;position:relative;box-shadow:0 30px 80px rgba(0,0,0,.55);background:#2d3338}
+.map-bg{position:absolute;inset:0;background:linear-gradient(30deg,transparent 0 20%,rgba(57,111,76,.33) 20% 34%,transparent 34% 50%,rgba(41,82,66,.28) 50% 67%,transparent 67%),repeating-linear-gradient(37deg,transparent 0 53px,rgba(175,185,195,.16) 54px 59px,transparent 60px 110px),repeating-linear-gradient(-26deg,transparent 0 71px,rgba(175,185,195,.12) 72px 76px,transparent 77px 130px),#3b474f}.map-bg:after{content:"";position:absolute;inset:0;background:rgba(10,10,13,.42)}
+.statusbar{position:relative;z-index:5;height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;direction:ltr;font-size:16px;font-weight:750}.statusbar .left{display:flex;gap:8px;align-items:center}
+.tool{position:relative;z-index:10;margin:6px 20px 22px;border-radius:28px;background:radial-gradient(circle at 50% 0%,rgba(110,52,255,.15),transparent 38%),linear-gradient(180deg,rgba(8,8,12,.985),rgba(13,10,18,.985));border:1px solid rgba(142,92,255,.22);box-shadow:var(--shadow);overflow:hidden}
+.header{display:grid;grid-template-columns:auto auto 1fr auto auto;align-items:center;gap:10px;padding:18px 18px 6px;direction:ltr}.pill,.info,.closebtn{border:1px solid #2f3036;background:#1a1a20;color:#fff;border-radius:14px}.pill{padding:10px 13px;font-weight:750;min-width:48px}.info{width:44px;height:44px;font-size:21px;font-weight:800}.closebtn{width:46px;height:46px;font-size:30px}.title{text-align:center;direction:rtl}.title h1{margin:0;font-size:34px;line-height:1;font-weight:850}.title p{margin:8px 0 0;color:#b9a1d2;font-size:15px}.live{width:12px;height:12px;border-radius:50%;background:#ff375f;box-shadow:0 0 12px rgba(255,55,95,.75)}
+.search-wrap{padding:14px 24px 12px}.search{height:62px;border:1px solid rgba(142,92,255,.34);border-radius:20px;background:#0e0e13;display:flex;align-items:center;gap:10px;padding:0 16px}.search input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:#fff;font-size:18px;text-align:right;direction:rtl}.search input::placeholder{color:#7e7e87}.search-icon{font-size:27px;color:#b273ff}
+.search-results{display:none;margin:0 20px 16px;border:1px solid #2b2b32;background:#15151a;border-radius:18px;overflow:hidden}.search-results.show{display:block}.result{padding:13px 15px;border-bottom:1px solid #28282f}.result:last-child{border-bottom:0}.result strong{display:block}.result span{display:block;color:#8d8d95;font-size:12px;margin-top:3px}
+.map-card{margin:0 20px 18px;height:278px;border-radius:24px;overflow:hidden;position:relative;border:1px solid rgba(255,255,255,.08);background:linear-gradient(25deg,transparent 0 18%,rgba(92,183,108,.20) 18% 32%,transparent 32% 55%,rgba(78,159,92,.18) 55% 66%,transparent 66%),repeating-linear-gradient(40deg,transparent 0 36px,#d7dadd 37px 42px,transparent 43px 75px),repeating-linear-gradient(-33deg,transparent 0 52px,#d0d4d8 53px 58px,transparent 59px 95px),#e8e7df}.map-pin{position:absolute;left:52%;top:45%;width:50px;height:50px;border-radius:50% 50% 50% 0;background:#ff375f;transform:translate(-50%,-50%) rotate(-45deg);border:4px solid #fff;box-shadow:0 8px 18px rgba(0,0,0,.28)}.map-pin:after{content:"";position:absolute;width:15px;height:15px;background:#fff;border-radius:50%;left:13px;top:13px}.map-caption{position:absolute;left:50%;top:58%;transform:translateX(-50%);color:#202023;font-weight:800;font-size:15px}.bookmark{position:absolute;top:16px;left:16px;width:46px;height:46px;border-radius:14px;border:0;background:#26262c;color:#fff;font-size:24px}.map-tip{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(24,24,28,.86);color:#fff;border-radius:10px;padding:6px 10px;font-size:13px;white-space:nowrap}
+.control-card{margin:0 20px 18px;border-radius:24px;background:#19191e;border:1px solid #2a2a31;padding:16px}.segment{display:grid;grid-template-columns:1fr 1fr;gap:2px;border:1px solid rgba(142,92,255,.35);border-radius:14px;overflow:hidden;background:#111116;margin-bottom:12px}.segment button{border:0;background:transparent;color:#b7b7be;padding:12px 8px;font-size:17px}.segment button.active{background:linear-gradient(180deg,#9b62ff,#8347f4);color:#fff;font-weight:800}.coords-title{color:#aaaab2;font-size:13px;margin:18px 0 5px}.coords-big{font-size:24px;line-height:1.25;direction:ltr;text-align:right}.coord-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}.coord-box{background:#0f0f12;border-radius:13px;padding:10px;text-align:center}.coord-box span{display:block;color:#9999a2;font-size:12px;margin-bottom:6px}.coord-box strong{font-size:20px;direction:ltr;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.heading-row{display:flex;align-items:center;gap:12px;margin-top:16px;padding-top:14px;border-top:1px solid #28282f}.heading-line{height:2px;background:#2a2a31;flex:1;position:relative}.heading-knob{width:28px;height:28px;border-radius:50%;background:#fff;position:absolute;left:48%;top:50%;transform:translate(-50%,-50%)}.heading-value{font-size:17px;color:#aaa}
+.setting-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 0;border-top:1px solid #28282f;font-size:18px}.toggle{width:52px;height:30px;border-radius:20px;background:#3a3a40;padding:2px;display:flex;align-items:center}.toggle i{width:26px;height:26px;border-radius:50%;background:#fff;display:block;transition:.2s}.toggle.on{background:var(--green)}.toggle.on i{transform:translateX(-22px)}.schedule{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 0;border-top:1px solid #28282f}.schedule .tag{background:#2b2b30;padding:10px 14px;border-radius:14px;color:#d7c5ff}.actions{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}.actions button{border:1px solid #33333a;border-radius:16px;padding:15px;font-size:18px;font-weight:800}.cancel-action{background:#2b2b30;color:#fff}.apply-action{background:linear-gradient(180deg,#9c64ff,#7a42eb);color:#fff;border-color:transparent!important}.footer-id{margin-top:17px;color:#74747d;font-size:11px;text-align:center;direction:ltr;line-height:1.5}
+@media(max-width:460px){.preview-shell{padding:0}.phone{width:100%;border-radius:0;min-height:100vh}.tool{margin:8px 8px 14px}}
+
+.sim-group{margin-top:10px;padding-top:14px;border-top:1px solid #28282f}
+.sim-title{color:#aaaab2;font-size:13px;margin-bottom:8px}
+.sim-row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid #26262d}
+.sim-row:last-child{border-bottom:0}
+.sim-icon{width:38px;height:38px;border-radius:12px;background:#101014;display:grid;place-items:center;font-size:18px;border:1px solid #292930}
+.sim-main strong{display:block;font-size:16px}
+.sim-main span{display:block;color:#8f8f98;font-size:12px;margin-top:3px}
+.sim-action{border:1px solid rgba(142,92,255,.35);background:#17171d;color:#cbb6ff;border-radius:11px;padding:8px 10px;font-size:13px}
+.modal-back{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;justify-content:center;z-index:9999;padding:18px}
+.modal-back.show{display:flex}
+.modal{width:min(390px,100%);background:#16161b;border:1px solid #303038;border-radius:22px;box-shadow:0 30px 80px rgba(0,0,0,.55);padding:16px}
+.modal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.modal-head h3{margin:0;font-size:21px}
+.modal-close{width:34px;height:34px;border-radius:50%;border:0;background:#303036;color:#ddd;font-size:20px}
+.form-row{margin:10px 0}
+.form-row label{display:block;color:#9898a1;font-size:12px;margin-bottom:6px}
+.form-row input,.form-row select{width:100%;background:#0f0f12;color:#fff;border:1px solid #2d2d34;border-radius:11px;padding:11px 12px;outline:none}
+.modal-note{margin-top:12px;padding:10px 11px;background:#101014;border:1px solid #27272e;border-radius:11px;color:#9f9fa7;font-size:12px;line-height:1.6}
+.modal-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px}
+.modal-actions button{border:0;border-radius:12px;padding:11px;font-weight:800}
+.modal-actions .save{background:linear-gradient(180deg,#9c64ff,#7a42eb);color:#fff}
+.modal-actions .secondary{background:#2a2a30;color:#fff}
+
+.profiles{
+  margin:0 20px 18px;
+  border-radius:24px;
+  background:#19191e;
+  border:1px solid #2a2a31;
+  padding:16px;
+}
+.profiles-head{
+  display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px
+}
+.profiles-head h3{margin:0;font-size:18px}
+.add-profile{
+  border:1px solid rgba(142,92,255,.35);
+  background:#15151a;color:#cbb6ff;
+  border-radius:11px;padding:8px 11px;font-size:13px
+}
+.profile-strip{
+  display:flex;gap:9px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none
+}
+.profile-strip::-webkit-scrollbar{display:none}
+.profile-chip{
+  min-width:118px;
+  border:1px solid #313138;
+  background:#101014;
+  border-radius:16px;
+  padding:11px 12px;
+  text-align:right;
+  position:relative;
+}
+.profile-chip.active{
+  border-color:rgba(142,92,255,.75);
+  box-shadow:0 0 0 1px rgba(142,92,255,.18) inset;
+  background:linear-gradient(180deg,rgba(142,92,255,.12),#101014)
+}
+.profile-chip strong{display:block;font-size:15px}
+.profile-chip span{display:block;color:#909098;font-size:11px;margin-top:4px;white-space:nowrap}
+.profile-dot{
+  width:8px;height:8px;border-radius:50%;background:#30d158;
+  position:absolute;left:10px;top:12px;box-shadow:0 0 8px rgba(48,209,88,.45)
+}
+.profile-summary{
+  margin-top:12px;background:#101014;border:1px solid #292930;border-radius:14px;padding:11px
+}
+.profile-summary-grid{
+  display:grid;grid-template-columns:repeat(2,1fr);gap:8px
+}
+.profile-summary-item{
+  background:#16161b;border-radius:10px;padding:9px 10px
+}
+.profile-summary-item span{display:block;color:#8f8f98;font-size:11px;margin-bottom:3px}
+.profile-summary-item strong{font-size:14px}
+.profile-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:10px}
+.profile-actions button{
+  border:0;border-radius:12px;padding:11px;font-weight:800
+}
+.profile-use{background:linear-gradient(180deg,#9c64ff,#7a42eb);color:#fff}
+.profile-edit{background:#2a2a30;color:#fff}
+.profile-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.profile-check{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  background:#101014;border:1px solid #292930;border-radius:11px;padding:10px 11px;margin-top:8px
+}
+.profile-check span{font-size:14px}
+
+
+.service-control{
+  margin:8px 20px 12px;
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:12px 14px;border-radius:18px;
+  background:rgba(20,20,25,.96);border:1px solid #2d2d35
+}
+.service-copy{display:flex;flex-direction:column;gap:3px}
+.service-copy strong{font-size:16px}
+.service-copy span{font-size:11px;color:#8e8e96}
+.service-toggle{
+  width:58px;height:32px;border-radius:18px;border:0;
+  background:#30d158;padding:3px;display:flex;align-items:center;transition:.2s
+}
+.service-toggle i{
+  width:26px;height:26px;border-radius:50%;background:#fff;display:block;
+  transform:translateX(-26px);transition:.2s;box-shadow:0 1px 4px rgba(0,0,0,.35)
+}
+.service-toggle.off{background:#3a3a40}
+.service-toggle.off i{transform:translateX(0)}
+.service-state{font-size:12px;font-weight:800;color:#30d158}
+.service-state.off{color:#9a9aa2}
+
+
+.search-source{
+  display:none;margin:8px 20px 0;padding:9px 12px;border-radius:12px;
+  background:#101014;border:1px solid #292930;color:#a8a8b0;font-size:12px
+}
+.search-source.show{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.search-source strong{color:#cbb6ff}
+.altitude-card{
+  margin-top:12px;padding:12px;border-radius:14px;background:#101014;border:1px solid #292930
+}
+.altitude-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}
+.altitude-head strong{font-size:15px}
+.altitude-head span{font-size:11px;color:#8e8e96}
+.altitude-input-wrap{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center}
+.altitude-input{
+  width:100%;background:#0b0b0e;color:#fff;border:1px solid #2d2d34;border-radius:11px;
+  padding:12px 13px;font-size:18px;direction:ltr;text-align:center;outline:none
+}
+.altitude-unit{
+  min-width:44px;text-align:center;padding:12px 10px;border-radius:11px;
+  background:#1b1b20;color:#c9c9d0;border:1px solid #303038
+}
+.altitude-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.altitude-actions button{
+  border:1px solid #303038;background:#1b1b20;color:#fff;border-radius:10px;padding:9px 8px
+}
+.altitude-actions button.primary{border-color:rgba(142,92,255,.42);color:#cbb6ff}
+
+
+/* ===== Refined compact scale — closer to the Rahhal visual density ===== */
+.header{padding:14px 16px 5px;gap:8px}
+.title h1{font-size:29px;font-weight:800}
+.title p{font-size:13px;margin-top:6px}
+.pill{padding:8px 10px;border-radius:12px;font-size:13px;min-width:43px}
+.info{width:39px;height:39px;border-radius:12px;font-size:19px}
+.closebtn{width:41px;height:41px;border-radius:13px;font-size:27px}
+
+.service-control{
+  margin:7px 20px 10px;padding:10px 12px;border-radius:15px
+}
+.service-copy strong{font-size:14px}
+.service-copy span{font-size:10.5px}
+.service-state{font-size:11px}
+.service-toggle{width:52px;height:29px}
+.service-toggle i{width:23px;height:23px;transform:translateX(-23px)}
+
+.search-wrap{padding:10px 22px 10px}
+.search{height:54px;border-radius:17px;padding:0 14px}
+.search input{font-size:16px}
+.search-icon{font-size:24px}
+.search-source{margin:6px 20px 0;padding:7px 10px;font-size:11px}
+
+.map-card{height:246px;margin:0 20px 16px;border-radius:22px}
+.bookmark{width:42px;height:42px;border-radius:12px;font-size:21px}
+.map-caption{font-size:13px}
+.map-tip{font-size:11px;padding:5px 8px}
+
+.control-card{padding:14px;margin-bottom:16px;border-radius:22px}
+.segment{border-radius:12px;margin-bottom:10px}
+.segment button{padding:10px 7px;font-size:15px}
+
+.coords-title{font-size:12px;margin:14px 0 4px}
+.coords-big{font-size:20px;line-height:1.2}
+.coord-grid{gap:7px;margin-top:11px}
+.coord-box{
+  padding:9px 7px;border:0;color:inherit;font:inherit;appearance:none;
+  min-height:70px
+}
+.coord-box span{font-size:11px;margin-bottom:5px}
+.coord-box strong{font-size:17px}
+.altitude-box{cursor:pointer}
+.altitude-box em{
+  display:block;margin-top:4px;color:#a98cff;font-size:9.5px;font-style:normal;font-weight:650
+}
+
+.heading-row{gap:10px;margin-top:12px;padding-top:11px}
+.heading-knob{width:24px;height:24px}
+.heading-value{font-size:14px}
+
+.setting-row{padding:11px 0;font-size:16px}
+.toggle{width:48px;height:28px}
+.toggle i{width:24px;height:24px}
+.toggle.on i{transform:translateX(-20px)}
+
+.schedule{padding:11px 0;font-size:15px}
+.schedule .tag{padding:8px 12px;border-radius:12px;font-size:13px}
+.actions{gap:10px;margin-top:12px}
+.actions button{padding:13px;font-size:16px;border-radius:14px}
+.footer-id{font-size:9.5px;margin-top:13px}
+
+.profiles{padding:14px;margin-bottom:16px;border-radius:22px}
+.profiles-head h3{font-size:16px}
+.add-profile{padding:7px 9px;font-size:12px}
+.profile-chip{min-width:108px;padding:9px 10px;border-radius:14px}
+.profile-chip strong{font-size:13.5px}
+.profile-chip span{font-size:10px}
+.profile-summary{padding:10px;border-radius:12px}
+.profile-summary-item{padding:8px 9px}
+.profile-summary-item span{font-size:10px}
+.profile-summary-item strong{font-size:12.5px}
+.profile-actions button{padding:10px;font-size:14px}
+
+.sim-title{font-size:11px}
+.sim-row{padding:9px 0}
+.sim-icon{width:34px;height:34px;border-radius:10px;font-size:16px}
+.sim-main strong{font-size:14px}
+.sim-main span{font-size:10.5px}
+.sim-action{padding:7px 9px;font-size:12px}
+
+/* altitude editor is a sheet/modal, not a large permanent card */
+#altitudeModal .modal{max-width:360px}
+#altitudeModal .modal-head h3{font-size:18px}
+#altitudeModal .form-row input{font-size:18px;text-align:center;direction:ltr}
+
+</style>
+</head>
+<body>
+<div class="preview-shell"><div class="phone"><div class="map-bg"></div>
+<div class="statusbar"><div class="left"><span>▥▥▥</span><span>Wi‑Fi</span><span>🔋71</span></div><div>3:42</div></div>
+<section class="tool">
+<div class="header"><button class="pill" id="langBtn">EN</button><button class="info">ⓘ</button><div class="title"><h1 id="brandName">موقع</h1><p>تحكم بالموقع ببساطة</p></div><span class="live"></span><button class="closebtn">×</button></div>
+<div class="service-control">
+  <div class="service-copy">
+    <strong>الخدمة</strong>
+    <span id="serviceHint">محاكاة الموقع مفعّلة</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px">
+    <span class="service-state" id="serviceState">مفعّلة</span>
+    <button class="service-toggle" id="serviceToggle" onclick="toggleService(this)" aria-label="تشغيل أو إيقاف الخدمة"><i></i></button>
+  </div>
+</div>
+<div class="search-wrap"><div class="search"><span class="search-icon">⌕</span><input id="searchInput" placeholder="ابحث أو الصق رابط Google / Apple Maps"></div></div>
+<div class="search-source" id="searchSource">
+  <span id="searchSourceText">تم التعرّف على رابط خرائط</span>
+  <strong id="searchSourceKind">Google Maps</strong>
+</div>
+<div class="search-results" id="searchResults"><div class="result"><strong>الرياض</strong><span>المملكة العربية السعودية</span></div><div class="result"><strong>جدة</strong><span>منطقة مكة المكرمة</span></div><div class="result"><strong>أبها</strong><span>منطقة عسير</span></div></div>
+<div class="map-card"><button class="bookmark">♡</button><div class="map-pin"></div><div class="map-caption">الموقع المحدد</div><div class="map-tip">اضغط على الخريطة أو اسحب الدبوس</div></div>
+<div class="control-card">
+<div class="segment"><button class="active">الخريطة</button><button>المفضلة</button></div>
+<div class="segment"><button class="active">ثابت</button><button>مسار</button></div>
+<div class="coords-title">الإحداثيات المحددة</div><div class="coords-big">N 37.774900<br>W 122.419400</div>
+<div class="coord-grid"><div class="coord-box"><span>خط العرض</span><strong>37.7749...</strong></div><div class="coord-box"><span>خط الطول</span><strong>-122.41...</strong></div><button class="coord-box altitude-box" type="button" onclick="openAltitudeModal()"><span>الارتفاع (م)</span><strong id="altitudeDisplay">736</strong><em>تعديل</em></button></div>
+<div class="heading-row"><div class="heading-line"><div class="heading-knob"></div></div><div class="heading-value">الاتجاه: °000</div></div>
+<div class="setting-row"><span>التذبذب</span><div class="toggle" onclick="toggle(this)"><i></i></div></div>
+<div class="setting-row"><span>الاحتفاظ بآخر موقع</span><div class="toggle" onclick="toggle(this)"><i></i></div></div>
+<div class="setting-row"><span>إظهار الموقع الحقيقي</span><div class="toggle" onclick="toggle(this)"><i></i></div></div>
+<div class="schedule"><strong>الجدولة الزمنية</strong><span class="tag">بدون وقت</span></div>
+
+<div class="profiles">
+  <div class="profiles-head">
+    <h3>الملفات الجاهزة</h3>
+    <button class="add-profile" onclick="openProfileModal()">+ ملف جديد</button>
+  </div>
+
+  <div class="profile-strip" id="profileStrip">
+    <button class="profile-chip active" onclick="selectProfile(this,'البيت')">
+      <i class="profile-dot"></i>
+      <strong>البيت</strong>
+      <span>موقع ثابت • Wi‑Fi</span>
+    </button>
+    <button class="profile-chip" onclick="selectProfile(this,'العمل')">
+      <strong>العمل</strong>
+      <span>موقع + تذبذب</span>
+    </button>
+    <button class="profile-chip" onclick="selectProfile(this,'اختبار الرياض')">
+      <strong>اختبار الرياض</strong>
+      <span>مسار + BLE</span>
+    </button>
+  </div>
+
+  <div class="profile-summary">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px">
+      <strong id="profileName">البيت</strong>
+      <span style="color:#30d158;font-size:12px">جاهز للتطبيق</span>
+    </div>
+
+    <div class="profile-summary-grid">
+      <div class="profile-summary-item"><span>الموقع</span><strong>ثابت</strong></div>
+      <div class="profile-summary-item"><span>التذبذب</span><strong>متوقف</strong></div>
+      <div class="profile-summary-item"><span>Wi‑Fi</span><strong>شبكة المنزل</strong></div>
+      <div class="profile-summary-item"><span>Bluetooth</span><strong>متوقف</strong></div>
+    </div>
+
+    <div class="profile-actions">
+      <button class="profile-edit" onclick="openProfileModal()">تعديل</button>
+      <button class="profile-use" onclick="applyProfile()">تطبيق الملف</button>
+    </div>
+  </div>
+</div>
+
+<div class="sim-group">
+  <div class="sim-title">محاكاة إضافية — بيئة اختبار</div>
+  <div class="sim-row">
+    <div class="sim-icon">⌁</div>
+    <div class="sim-main">
+      <strong>محاكاة Wi‑Fi</strong>
+      <span>ملف شبكة تجريبي داخل GPSLab</span>
+    </div>
+    <button class="sim-action" onclick="openSimModal('wifi')">إعداد</button>
+  </div>
+  <div class="sim-row">
+    <div class="sim-icon">ᛒ</div>
+    <div class="sim-main">
+      <strong>بصمة Bluetooth تجريبية</strong>
+      <span>ملف BLE للاختبار المصرّح</span>
+    </div>
+    <button class="sim-action" onclick="openSimModal('ble')">إعداد</button>
+  </div>
+</div>
+<div class="actions"><button class="cancel-action">إلغاء</button><button class="apply-action">تطبيق الموقع</button></div>
+<div style="margin-top:18px;padding-top:14px;border-top:1px solid #28282f">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px">
+    <strong style="font-size:17px">معلومات الاشتراك</strong>
+    <span style="background:rgba(48,209,88,.14);color:#30d158;border:1px solid rgba(48,209,88,.28);padding:6px 10px;border-radius:999px;font-size:12px;font-weight:800">نشط</span>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    <div style="background:#0f0f12;border-radius:12px;padding:10px">
+      <span style="display:block;color:#92929a;font-size:12px;margin-bottom:4px">الخطة</span>
+      <strong style="font-size:15px">تجريبي — 24 ساعة</strong>
+    </div>
+    <div style="background:#0f0f12;border-radius:12px;padding:10px">
+      <span style="display:block;color:#92929a;font-size:12px;margin-bottom:4px">تاريخ الانتهاء</span>
+      <strong style="font-size:15px">20 سبتمبر 2026</strong>
+    </div>
+  </div>
+
+</div>
+
+<div class="footer-id" style="margin-top:12px">Installation ID<br>1C9BDBB3-AB67-468D-8A00-B2F1ABA067BF</div>
+</div></section></div></div>
+<script>
+const search=document.getElementById('searchInput');const results=document.getElementById('searchResults');search.addEventListener('focus',()=>results.classList.add('show'));search.addEventListener('input',()=>results.classList.add('show'));document.querySelectorAll('.result').forEach(r=>r.addEventListener('click',()=>{search.value=r.querySelector('strong').textContent;results.classList.remove('show');search.blur()}));
+function toggle(el){el.classList.toggle('on')}
+document.querySelectorAll('.segment').forEach(seg=>seg.querySelectorAll('button').forEach(btn=>btn.addEventListener('click',()=>{seg.querySelectorAll('button').forEach(b=>b.classList.remove('active'));btn.classList.add('active')})));
+let ar=true;document.getElementById('langBtn').addEventListener('click',()=>{ar=!ar;document.documentElement.dir=ar?'rtl':'ltr';document.documentElement.lang=ar?'ar':'en';document.getElementById('langBtn').textContent=ar?'EN':'AR';search.placeholder=ar?'ابحث عن مدينة أو عنوان أو معلم':'Search for a city, address, or place';document.querySelector('.title p').textContent=ar?'تحكم بالموقع ببساطة':'Simple location control'});
+
+
+function selectProfile(el,name){
+  document.querySelectorAll('.profile-chip').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('profileName').textContent=name;
+
+  const cells=document.querySelectorAll('.profile-summary-item strong');
+  if(name==='البيت'){
+    cells[0].textContent='ثابت';
+    cells[1].textContent='متوقف';
+    cells[2].textContent='شبكة المنزل';
+    cells[3].textContent='متوقف';
+  }else if(name==='العمل'){
+    cells[0].textContent='ثابت';
+    cells[1].textContent='مفعّل';
+    cells[2].textContent='متوقف';
+    cells[3].textContent='متوقف';
+  }else{
+    cells[0].textContent='مسار';
+    cells[1].textContent='مفعّل';
+    cells[2].textContent='متوقف';
+    cells[3].textContent='BLE Test';
+  }
+}
+function openProfileModal(){document.getElementById('profileModal').classList.add('show')}
+function closeProfileModal(){document.getElementById('profileModal').classList.remove('show')}
+function saveProfile(){
+  closeProfileModal();
+  alert('تم حفظ الملف في المعاينة فقط');
+}
+function applyProfile(){
+  const name=document.getElementById('profileName').textContent;
+  alert('تم تطبيق ملف: '+name+' — معاينة فقط');
+}
+
+function openSimModal(type){
+  const m=document.getElementById('simModal');
+  const wifi=document.getElementById('wifiFields');
+  const ble=document.getElementById('bleFields');
+  const title=document.getElementById('simModalTitle');
+  if(type==='wifi'){
+    title.textContent='محاكاة Wi‑Fi';
+    wifi.style.display='block';
+    ble.style.display='none';
+  }else{
+    title.textContent='بصمة Bluetooth تجريبية';
+    wifi.style.display='none';
+    ble.style.display='block';
+  }
+  m.classList.add('show');
+}
+function closeSimModal(){document.getElementById('simModal').classList.remove('show')}
+function saveSimModal(){closeSimModal(); alert('تم حفظ إعداد المعاينة فقط');}
+
+function toggleService(btn){
+  const off=btn.classList.toggle('off');
+  const state=document.getElementById('serviceState');
+  const hint=document.getElementById('serviceHint');
+  state.textContent=off?'متوقفة':'مفعّلة';
+  hint.textContent=off?'محاكاة الموقع متوقفة':'محاكاة الموقع مفعّلة';
+  state.classList.toggle('off',off);
+}
+
+
+function parseMapInput(value){
+  const v=(value||'').trim();
+  const result={kind:null,lat:null,lon:null,label:null};
+
+  if(/maps\.app\.goo\.gl|google\.[^/]+\/maps|maps\.google\./i.test(v)){
+    result.kind='Google Maps';
+  }else if(/maps\.apple\.com/i.test(v)){
+    result.kind='Apple Maps';
+  }
+
+  // Common Google Maps patterns: @lat,lon or !3dlat!4dlon
+  let m=v.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
+  if(!m) m=v.match(/!3d(-?\d+(?:\.\d+)?).*?!4d(-?\d+(?:\.\d+)?)/);
+  // Apple Maps commonly uses ll=lat,lon or coordinate=lat,lon.
+  if(!m) m=v.match(/[?&](?:ll|coordinate)=(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/i);
+  // Plain "lat, lon" also works.
+  if(!m) m=v.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+
+  if(m){
+    result.lat=parseFloat(m[1]);
+    result.lon=parseFloat(m[2]);
+  }
+  return result;
+}
+
+function updateMapSourcePreview(){
+  const source=document.getElementById('searchSource');
+  const kind=document.getElementById('searchSourceKind');
+  const text=document.getElementById('searchSourceText');
+  const parsed=parseMapInput(search.value);
+
+  if(parsed.kind){
+    source.classList.add('show');
+    kind.textContent=parsed.kind;
+    text.textContent=parsed.lat!==null
+      ? `تم استخراج الإحداثيات: ${parsed.lat.toFixed(6)}, ${parsed.lon.toFixed(6)}`
+      : 'تم التعرّف على رابط خرائط — الرابط المختصر يُحل في التطبيق الفعلي';
+  }else{
+    source.classList.remove('show');
+  }
+}
+
+search.addEventListener('input', updateMapSourcePreview);
+search.addEventListener('paste', ()=>setTimeout(updateMapSourcePreview,0));
+
+function openAltitudeModal(){
+  document.getElementById('altitudeModal').classList.add('show');
+}
+function closeAltitudeModal(){
+  document.getElementById('altitudeModal').classList.remove('show');
+}
+function applyAltitudeValue(){
+  const input=document.getElementById('altitudeInput');
+  let value=Number(input.value);
+  if(!Number.isFinite(value)) value=0;
+  value=Math.round(value);
+  input.value=value;
+  const display=document.getElementById('altitudeDisplay');
+  if(display) display.textContent=String(value);
+  closeAltitudeModal();
+}
+function setAltitudeValue(v){
+  document.getElementById('altitudeInput').value=v;
+  applyAltitudeValue();
+}
+
+</script>
+
+<div class="modal-back" id="profileModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>ملف GPSLab</h3>
+      <button class="modal-close" onclick="closeProfileModal()">×</button>
+    </div>
+
+    <div class="form-row">
+      <label>اسم الملف</label>
+      <input value="البيت">
+    </div>
+
+    <div class="profile-form-grid">
+      <div class="form-row">
+        <label>وضع الموقع</label>
+        <select>
+          <option>ثابت</option>
+          <option>مسار</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label>التذبذب</label>
+        <select>
+          <option>متوقف</option>
+          <option>مفعّل</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="profile-check">
+      <span>إرفاق إعداد Wi‑Fi</span>
+      <div class="toggle on" onclick="toggle(this)"><i></i></div>
+    </div>
+    <div class="profile-check">
+      <span>إرفاق إعداد Bluetooth</span>
+      <div class="toggle" onclick="toggle(this)"><i></i></div>
+    </div>
+    <div class="profile-check">
+      <span>إرفاق الجدولة</span>
+      <div class="toggle" onclick="toggle(this)"><i></i></div>
+    </div>
+
+    <div class="modal-note">
+      الملف يجمع إعدادات GPSLab في مشهد واحد. عند تطبيقه يتم تحميل الموقع والمسار والتذبذب وإعدادات الاختبار المرتبطة دفعة واحدة.
+    </div>
+
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeProfileModal()">إلغاء</button>
+      <button class="save" onclick="saveProfile()">حفظ الملف</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-back" id="simModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3 id="simModalTitle">محاكاة Wi‑Fi</h3>
+      <button class="modal-close" onclick="closeSimModal()">×</button>
+    </div>
+
+    <div id="wifiFields">
+      <div class="form-row"><label>اسم الملف التجريبي</label><input value="شبكة المنزل"></div>
+      <div class="form-row"><label>SSID تجريبي</label><input value="GPSLab-Test-WiFi"></div>
+      <div class="form-row">
+        <label>قوة الإشارة</label>
+        <select><option>قوية</option><option>متوسطة</option><option>ضعيفة</option></select>
+      </div>
+    </div>
+
+    <div id="bleFields" style="display:none">
+      <div class="form-row"><label>اسم ملف الاختبار</label><input value="BLE Test Profile"></div>
+      <div class="form-row"><label>اسم الجهاز التجريبي</label><input value="GPSLab BLE"></div>
+      <div class="form-row">
+        <label>قوة الإشارة</label>
+        <select><option>-45 dBm</option><option>-60 dBm</option><option>-75 dBm</option></select>
+      </div>
+      <div class="form-row">
+        <label>نمط الإعلان</label>
+        <select><option>عام</option><option>Beacon تجريبي</option><option>خدمات مخصصة للاختبار</option></select>
+      </div>
+    </div>
+
+    <div class="modal-note">
+      هذه معاينة تصميم فقط لملفات اختبار داخل GPSLab، بدون تغيير فعلي لهوية شبكة أو جهاز حقيقي.
+    </div>
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeSimModal()">إلغاء</button>
+      <button class="save" onclick="saveSimModal()">حفظ</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-back" id="altitudeModal">
+  <div class="modal">
+    <div class="modal-head">
+      <h3>الارتفاع</h3>
+      <button class="modal-close" onclick="closeAltitudeModal()">×</button>
+    </div>
+    <div class="form-row">
+      <label>الارتفاع بالمتر</label>
+      <input id="altitudeInput" type="number" step="1" value="736" inputmode="decimal">
+    </div>
+    <div class="modal-note">أدخل قيمة موجبة أو سالبة. تُستخدم القيمة عند تطبيق الموقع.</div>
+    <div class="modal-actions">
+      <button class="secondary" onclick="setAltitudeValue(0)">تصفير</button>
+      <button class="save" onclick="applyAltitudeValue()">تطبيق</button>
+    </div>
+  </div>
+</div>
+
+</body></html>

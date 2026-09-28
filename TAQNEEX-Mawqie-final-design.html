@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TAQNEEX — موقع</title>
+<style>
+:root{--bg:#0b0d12;--card:#151a27;--text:#f4f5f7;--muted:#9ca3af;--border:#262c3a;--accent:#6d4aff;--accent2:#8b5cf6;--soft:#171c2a}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Segoe UI",Tahoma,Arial,sans-serif;line-height:1.6}
+a{text-decoration:none;color:inherit}.container{width:min(1180px,calc(100% - 32px));margin:auto}
+.glass{background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.012)),var(--card);border:1px solid var(--border)}
+.grad{background:radial-gradient(circle at 85% 15%,rgba(139,92,246,.20),transparent 34%),radial-gradient(circle at 15% 80%,rgba(109,74,255,.17),transparent 34%),linear-gradient(135deg,#141827,#10131d)}
+.pill{border:1px solid var(--border);background:var(--soft)}
+header{position:sticky;top:0;z-index:10;background:rgba(11,13,18,.84);backdrop-filter:blur(18px);border-bottom:1px solid var(--border)}
+.nav{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:14px 0}.brand{display:flex;align-items:center;gap:12px}
+.brandmark{width:42px;height:42px;border-radius:15px;display:grid;place-items:center;font-weight:800;background:linear-gradient(135deg,#5535ff,#8b5cf6)}
+.brandname{font-weight:800;font-size:18px}.tag{font-size:12px;color:var(--muted)}.links{display:flex;align-items:center;gap:22px;font-size:14px}.login{padding:9px 14px;border-radius:12px}
+.hero{display:grid;grid-template-columns:1.08fr .92fr;gap:40px;align-items:center;padding:72px 0 44px}.eyebrow{display:inline-flex;align-items:center;gap:9px;padding:7px 12px;border-radius:999px;font-size:12px}.dot{width:8px;height:8px;border-radius:50%;background:#6ee7b7}
+h1{font-size:clamp(46px,7vw,82px);line-height:.98;letter-spacing:-.045em;margin:24px 0 0}h1 span{color:var(--muted)}.lead{font-size:19px;color:var(--muted);max-width:650px;margin-top:24px}
+.actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:28px}.btn{padding:13px 19px;border-radius:14px}.btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:white}.btn-secondary{color:var(--text)}
+.mock{border-radius:30px;padding:16px}.mock-inner{min-height:330px;border-radius:24px;padding:26px;display:flex;flex-direction:column;justify-content:space-between}.mock-top{display:flex;justify-content:space-between;gap:12px}.badge{padding:5px 11px;border-radius:999px;font-size:12px}
+.mock-title{font-size:38px;font-weight:800;line-height:1.2}.features-mini{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.mini{padding:14px 10px;border-radius:18px;text-align:center}.mini strong{display:block;font-size:16px}.mini span{font-size:12px;color:var(--muted)}
+section{padding:58px 0}.section-head{text-align:center;max-width:720px;margin:0 auto 34px}.section-head .kicker{font-size:13px;color:var(--muted)}.section-head h2{font-size:clamp(30px,4vw,44px);margin:4px 0 8px}.section-head p{color:var(--muted);font-size:14px}
+.pricing{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}.plan{border-radius:24px;padding:22px;display:flex;flex-direction:column;min-height:280px}.plan h3{margin:2px 0 0;font-size:22px}.plan .sub{font-size:13px;color:var(--muted)}.price{margin-top:24px}.price strong{font-size:42px;line-height:1}.price span{font-size:13px;color:var(--muted)}.plan p{font-size:13px;color:var(--muted);margin:15px 0 0}.plan .choose{margin-top:auto;padding-top:22px}.choose a{display:block;text-align:center;padding:12px;border-radius:13px}
+.featured{outline:2px solid rgba(109,74,255,.65)}.best{font-size:11px;padding:5px 9px;border-radius:999px}.plan-top{display:flex;justify-content:space-between;gap:10px;align-items:center}
+.benefits{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.benefit{border-radius:24px;padding:24px}.benefit .icon{font-size:25px;margin-bottom:26px}.benefit h3{margin:0;font-size:18px}.benefit p{margin:8px 0 0;color:var(--muted);font-size:14px}
+.steps-wrap{border-radius:28px;padding:32px}.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:26px;margin-top:28px}.step-num{width:38px;height:38px;border-radius:50%;display:grid;place-items:center;margin-bottom:14px}.step b{font-size:17px}.step p{margin:7px 0 0;color:var(--muted);font-size:14px}
+footer{border-top:1px solid var(--border);padding:28px 0 38px;text-align:center}.footlinks{font-size:12px;color:var(--muted);margin-top:8px}
+@media(max-width:1000px){.hero{grid-template-columns:1fr}.pricing{grid-template-columns:repeat(2,1fr)}.benefits,.steps{grid-template-columns:1fr}}
+@media(max-width:680px){.container{width:min(100% - 22px,1180px)}.links a:not(.login){display:none}.hero{padding-top:40px}h1{font-size:50px}.lead{font-size:16px}.pricing{grid-template-columns:1fr}.features-mini{grid-template-columns:1fr}.mock-title{font-size:30px}section{padding:42px 0}.steps-wrap{padding:24px}}
+</style>
+</head>
+<body>
+<header>
+  <div class="container nav">
+    <div class="brand"><div class="brandmark">T</div><div><div class="brandname">TAQNEEX</div><div class="tag">Software made simple.</div></div></div>
+    <nav class="links"><a href="#product">موقع</a><a href="#pricing">الأسعار</a><a href="#how">طريقة الاستخدام</a><a class="login pill" href="#login">تسجيل الدخول</a></nav>
+  </div>
+</header>
+
+<main>
+<section class="container hero" id="product">
+  <div>
+    <div class="eyebrow pill"><span class="dot"></span> موقع من TAQNEEX</div>
+    <h1>غيّر موقعك.<br><span>واختبر بسهولة.</span></h1>
+    <p class="lead">موقع أداة بسيطة للتحكم بالموقع والمسارات داخل التطبيقات، مع تجربة استخدام واضحة وإدارة اشتراكك من مكان واحد.</p>
+    <div class="actions"><a class="btn btn-primary" href="#pricing">شاهد الخطط</a><a class="btn btn-secondary pill" href="#how">طريقة التثبيت</a></div>
+  </div>
+  <div class="mock glass">
+    <div class="mock-inner grad">
+      <div class="mock-top"><span class="badge pill">موقع</span><span class="tag">iOS</span></div>
+      <div class="mock-title">الموقع والمسارات.<br>تحت تحكمك.</div>
+      <div class="features-mini">
+        <div class="mini glass"><strong>Map</strong><span>المواقع</span></div>
+        <div class="mini glass"><strong>Route</strong><span>المسارات</span></div>
+        <div class="mini glass"><strong>Drift</strong><span>الانحراف</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="container" id="pricing">
+  <div class="section-head"><div class="kicker">اشتراكات موقع</div><h2>اختر المدة المناسبة لك</h2><p>جميع الخطط تمنحك الوصول إلى موقع خلال مدة الاشتراك.</p></div>
+  <div class="pricing">
+    <article class="plan glass"><div class="sub">للتجربة</div><h3>يوم واحد</h3><div class="price"><strong>1</strong> <span>ريال</span></div><p>جرّب موقع قبل الاشتراك.</p><div class="choose"><a class="pill" href="#login">جرّب موقع</a></div></article>
+    <article class="plan glass"><div class="sub">مرن</div><h3>شهر</h3><div class="price"><strong>20</strong> <span>ريال</span></div><p>30 يومًا من الوصول الكامل.</p><div class="choose"><a class="pill" href="#login">اشترك في موقع</a></div></article>
+    <article class="plan glass"><div class="sub">3 أشهر</div><h3>ربع سنوي</h3><div class="price"><strong>89</strong> <span>ريال</span></div><p>اشتراك لمدة 3 أشهر.</p><div class="choose"><a class="pill" href="#login">اشترك في موقع</a></div></article>
+    <article class="plan glass"><div class="sub">6 أشهر</div><h3>نصف سنوي</h3><div class="price"><strong>159</strong> <span>ريال</span></div><p>اشتراك لمدة 6 أشهر.</p><div class="choose"><a class="pill" href="#login">اشترك في موقع</a></div></article>
+    <article class="plan glass grad featured"><div class="plan-top"><div class="sub">12 شهرًا</div><span class="best pill">أفضل قيمة</span></div><h3>سنوي</h3><div class="price"><strong>200</strong> <span>ريال</span></div><p>سنة كاملة من الوصول إلى موقع.</p><div class="choose"><a class="btn-primary" href="#login">اشترك سنويًا</a></div></article>
+  </div>
+</section>
+
+<section class="container">
+  <div class="benefits">
+    <article class="benefit glass"><div class="icon">⌖</div><h3>تحكم بالموقع</h3><p>بحث وحفظ المواقع والتحكم بالموقع النشط.</p></article>
+    <article class="benefit glass"><div class="icon">↝</div><h3>المسارات</h3><p>Walking وCycling وDriving ومسارات مخصصة.</p></article>
+    <article class="benefit glass"><div class="icon">◈</div><h3>حساب واحد</h3><p>إدارة اشتراك موقع والأجهزة والتجديد من بوابة العميل.</p></article>
+  </div>
+</section>
+
+<section class="container" id="how">
+  <div class="steps-wrap grad">
+    <div class="tag">طريقة استخدام موقع</div>
+    <h2 style="font-size:34px;margin:5px 0 0">ثلاث خطوات فقط</h2>
+    <div class="steps">
+      <div class="step"><div class="step-num glass">١</div><b>ثبّت IPA</b><p>ثبّت التطبيق بالطريقة المتاحة لديك.</p></div>
+      <div class="step"><div class="step-num glass">٢</div><b>افتح موقع</b><p>اضغط ثلاث أصابع لفتح الأداة من داخل التطبيق.</p></div>
+      <div class="step"><div class="step-num glass">٣</div><b>سجّل الدخول</b><p>تتم مزامنة حالة اشتراكك تلقائيًا.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="container" id="login" style="padding-top:0">
+  <div class="glass" style="border-radius:28px;padding:28px;text-align:center">
+    <div class="tag">بوابة العميل</div>
+    <h2 style="margin:4px 0 8px;font-size:30px">إدارة اشتراكك من مكان واحد</h2>
+    <p style="margin:0;color:var(--muted)">تسجيل الدخول، التجديد، الأجهزة، والملاحظات.</p>
+  </div>
+</section>
+</main>
+
+<footer><div class="container"><div style="font-weight:800">TAQNEEX</div><div class="footlinks">موقع · الدعم · الخصوصية · الشروط</div></div></footer>
+</body>
+</html>
