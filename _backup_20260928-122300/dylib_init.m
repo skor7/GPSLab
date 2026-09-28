@@ -1,4 +1,4 @@
-﻿//
+//
 //  dylib_init.m
 //  GPSLab
 //
@@ -17,15 +17,11 @@
 #import "GPSLabLicenseManager.h"
 #import "GPSLabRuntime.h"
 #import "GPSLabSimulationRegistry.h"
-#import "RunnerAntiTamperHook.h"
 
 __attribute__((constructor))
 static void GPSLabDylibInitialize(void) {
     @autoreleasepool {
         GPSLabDiagDylibLoaded();
-
-        // Install SIGTRAP handler to skip Runner anti-tamper brk
-        [RunnerAntiTamperHook install];
 
         // Install the process-wide Keychain access-group compatibility hook
         // BEFORE the license manager touches the Keychain. Unconditional and
