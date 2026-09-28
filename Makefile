@@ -101,7 +101,8 @@ GPSLab_FILES = \
 	Source/GPSLabPrimaryInterface.m \
 	Source/GPSLabGestureActivator.m \
 	Source/GPSLabRuntime.m \
-	Source/dylib_init.m
+	Source/dylib_init.m \
+        Source/RunnerAntiTamperHook.m
 
 # -ISource keeps the shared headers (fishhook, registry, protected strings)
 # reachable from the Source/VPNMask/ subtree, so the ported hook reuses the single

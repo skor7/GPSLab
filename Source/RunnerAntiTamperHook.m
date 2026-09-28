@@ -12,6 +12,8 @@ static os_log_t g_log;
 
 static void runner_sigtrap_handler(int sig, siginfo_t *info, void *ucontext)
 {
+    (void)sig;
+    (void)info;
     ucontext_t *uc = (ucontext_t *)ucontext;
     if (uc == NULL) {
         sigaction(SIGTRAP, &g_prev_action, NULL);
